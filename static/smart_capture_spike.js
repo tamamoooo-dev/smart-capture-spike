@@ -1,15 +1,17 @@
 (() => {
   'use strict';
 
-  // Measured floor for ArUco detection on this form (Phase 0 resolution sweep).
-  // Detection collapses below ~2 px/module and plateaus near 2.9. Phone captures
-  // needed ~3000 px of page width to clear 40% marker coverage. The previous
-  // 2200 px cap produced 7.4 px/mm = 2.7 px/module -- below the floor, so every
-  // auto-capture was an image the grader could not register at all.
-  // What actually matters is the width of the PAGE in source pixels, not the
-  // width of the frame. A 3500px frame with the sheet at 51% linear coverage
-  // yields only ~1785px of page -- far below the floor. So the requirement is
-  // expressed on the page and checked live, from the detected page box.
+  // Measured floor for ArUco detection on this form (Phase 0 resolution sweep):
+  // detection collapses below ~2 px/module and plateaus near 2.9, and phone
+  // captures needed ~3000 px of PAGE width to clear 40% marker coverage.
+  //
+  // The requirement is on the page, not the frame -- a 3500 px frame with the
+  // sheet at 51% linear coverage yields only ~1785 px of page. So it is checked
+  // live from the detected page box, scaled back to source pixels.
+  //
+  // This also forces landscape. On a 4:3 sensor with 5% margins, a portrait
+  // hold caps the page at ~2722 px while landscape reaches ~3629 px, so a
+  // portrait capture of an A4-landscape register can never satisfy the floor.
   const MIN_PAGE_WIDTH_PX = 3000;
   const MAX_CAPTURE_WIDTH = 4608;
   // Deterministic conditions are enforced BEFORE the shutter. A device whose
@@ -113,6 +115,7 @@
     // Analysis runs on a small canvas; scale the page box back to source pixels
     // so the resolution check is about the image we will actually capture.
     const sourceScale = (sourceWidth || width) / width;
+    const landscape = width >= height;
     const count = width * height;
     const gray = new Float32Array(count);
     const chroma = new Uint8Array(count);
@@ -195,6 +198,10 @@
     // full-resolution committed frame, because marker detection needs ~3000 px
     // and is non-monotonic in resolution -- unusable as a hill-climbing signal.
     const checks = {
+      // The register is A4 landscape. On a 4:3 sensor a portrait hold caps the
+      // page at ~2722px against a 3000px floor, so portrait can never satisfy
+      // pageSize. Checked first: every other correction is wasted in portrait.
+      orientation: landscape,
       pageVisible: marginX >= THRESHOLDS.pageMarginRatio && marginY >= THRESHOLDS.pageMarginRatio && maskFill >= THRESHOLDS.minMaskFill,
       perspective: perspectiveRatio <= THRESHOLDS.maxPerspectiveRatio && topSpan > boxWidth * 0.35 && leftSpan > boxHeight * 0.35,
       sharpness: sharpness >= THRESHOLDS.minSharpness,
@@ -205,7 +212,7 @@
     const ready = Object.values(checks).every(Boolean);
     return {
       ready, checks,
-      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx},
+      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, landscape},
       box: {x: component.minX, y: component.minY, width: boxWidth, height: boxHeight},
       worstRegionBox: uniformity >= THRESHOLDS.minRegionLumaRatio ? null : worstRegionBox,
       reason: firstFailure(checks, {coverage})
@@ -213,10 +220,11 @@
   }
 
   function emptyResult(reason) {
-    return {ready:false, checks:{pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0}, box:null, worstRegionBox:null, reason};
+    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,landscape:false}, box:null, worstRegionBox:null, reason};
   }
 
   function firstFailure(checks, metrics) {
+    if (!checks.orientation) return 'أدر الهاتف أفقياً ليطابق اتجاه السجل';
     if (!checks.pageVisible) return 'أظهر الصفحة كاملة مع فراغ حول الحواف';
     if (!checks.perspective) return 'اجعل الهاتف أكثر تعامداً مع الورقة';
     if (!checks.sharpness) return 'ثبّت الهاتف وانتظر اكتمال التركيز';
@@ -240,6 +248,7 @@
     if (name === 'sharpness') return Math.round(m.sharpness).toString();
     if (name === 'pageSize') return `${m.pageWidthPx}px`;
     if (name === 'uniformLighting') return `${Math.round(m.uniformity * 100)}%`;
+    if (name === 'orientation') return m.landscape ? 'أفقي' : 'رأسي';
     return Math.round(m.meanLuma).toString();
   }
 
@@ -357,7 +366,11 @@
       });
       video.srcObject = stream; await video.play();
 
-      const granted = video.videoWidth;
+      // Capability is a property of the sensor, so test its LONG side. A phone
+      // held portrait reports a short videoWidth but can still deliver once
+      // rotated -- refusing it here would reject a perfectly capable device.
+      // Orientation is handled as guidance, not as a capability failure.
+      const granted = Math.max(video.videoWidth, video.videoHeight);
       if (granted < MIN_STREAM_WIDTH) {
         // Deterministic and known now: the page can never be wider than the
         // frame, so no amount of guidance can rescue this device. Refuse to
