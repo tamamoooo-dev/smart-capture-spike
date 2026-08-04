@@ -1,6 +1,14 @@
 (() => {
   'use strict';
 
+  // Measured floor for ArUco detection on this form (Phase 0 resolution sweep).
+  // Detection collapses below ~2 px/module and plateaus near 2.9. Phone captures
+  // needed ~3000 px of page width to clear 40% marker coverage. The previous
+  // 2200 px cap produced 7.4 px/mm = 2.7 px/module -- below the floor, so every
+  // auto-capture was an image the grader could not register at all.
+  const MIN_CAPTURE_WIDTH = 3500;
+  const MAX_CAPTURE_WIDTH = 4608;
+
   const THRESHOLDS = Object.freeze({
     pageMarginRatio: 0.018,
     minPageCoverage: 0.26,
@@ -12,6 +20,13 @@
     maxPageLuma: 238,
     maxDarkFraction: 0.22,
     maxBrightFraction: 0.42,
+    // Regional lighting. A page-mean test cannot see a localised shadow: on
+    // IMG_1147 the phone's own shadow covered rows 21-40 while barely moving the
+    // page mean, yet local exposure predicted per-row grading success with
+    // AUC 0.940 -- the strongest predictor measured. The check must be regional.
+    lightingGridX: 6,
+    lightingGridY: 4,
+    minRegionLumaRatio: 0.74,
     stableFrames: 8,
     analysisIntervalMs: 180
   });
@@ -122,6 +137,9 @@
     const verticalRatio = Math.max(leftSpan, rightSpan) / Math.max(1, Math.min(leftSpan, rightSpan));
     const perspectiveRatio = Math.max(horizontalRatio, verticalRatio);
 
+    const gx = THRESHOLDS.lightingGridX, gy = THRESHOLDS.lightingGridY;
+    const regionSum = new Float64Array(gx * gy);
+    const regionCount = new Float64Array(gx * gy);
     let lapSum = 0, lapSq = 0, lapCount = 0;
     let lumaSum = 0, lumaCount = 0, dark = 0, bright = 0;
     for (let y = Math.max(1, component.minY); y < Math.min(height - 1, component.maxY); y++) {
@@ -132,6 +150,10 @@
         lapSum += lap; lapSq += lap * lap; lapCount++;
         const value = gray[i]; lumaSum += value; lumaCount++;
         if (value < 65) dark++; if (value > 247) bright++;
+        const rx = Math.min(gx - 1, Math.floor((x - component.minX) / boxWidth * gx));
+        const ry = Math.min(gy - 1, Math.floor((y - component.minY) / boxHeight * gy));
+        const r = ry * gx + rx;
+        regionSum[r] += value; regionCount[r] += 1;
       }
     }
     const sharpness = lapCount ? lapSq / lapCount - Math.pow(lapSum / lapCount, 2) : 0;
@@ -139,35 +161,62 @@
     const darkFraction = dark / Math.max(1, lumaCount);
     const brightFraction = bright / Math.max(1, lumaCount);
 
+    // Uniformity = darkest region / brightest region. A shadow across part of
+    // the page drives this down while leaving meanLuma almost untouched.
+    let minRegion = Infinity, maxRegion = 0, worstRegion = -1;
+    for (let r = 0; r < regionSum.length; r++) {
+      if (regionCount[r] < 12) continue;
+      const value = regionSum[r] / regionCount[r];
+      if (value < minRegion) {minRegion = value; worstRegion = r;}
+      if (value > maxRegion) maxRegion = value;
+    }
+    const uniformity = maxRegion > 0 && minRegion < Infinity ? minRegion / maxRegion : 0;
+    const worstRegionBox = worstRegion < 0 ? null : {
+      x: component.minX + (worstRegion % gx) / gx * boxWidth,
+      y: component.minY + Math.floor(worstRegion / gx) / gy * boxHeight,
+      width: boxWidth / gx,
+      height: boxHeight / gy
+    };
+
+    // The live loop guides only. Registration is validated once, on the
+    // full-resolution committed frame, because marker detection needs ~3000 px
+    // and is non-monotonic in resolution -- unusable as a hill-climbing signal.
     const checks = {
       pageVisible: marginX >= THRESHOLDS.pageMarginRatio && marginY >= THRESHOLDS.pageMarginRatio && maskFill >= THRESHOLDS.minMaskFill,
       perspective: perspectiveRatio <= THRESHOLDS.maxPerspectiveRatio && topSpan > boxWidth * 0.35 && leftSpan > boxHeight * 0.35,
       sharpness: sharpness >= THRESHOLDS.minSharpness,
       lighting: meanLuma >= THRESHOLDS.minPageLuma && meanLuma <= THRESHOLDS.maxPageLuma && darkFraction <= THRESHOLDS.maxDarkFraction && brightFraction <= THRESHOLDS.maxBrightFraction,
-      pageSize: coverage >= THRESHOLDS.minPageCoverage && coverage <= THRESHOLDS.maxPageCoverage,
-      // Fail closed: the actual OpenCV/ArUco registration probe is not present in this static spike.
-      registrationReady: false
+      uniformLighting: uniformity >= THRESHOLDS.minRegionLumaRatio,
+      pageSize: coverage >= THRESHOLDS.minPageCoverage && coverage <= THRESHOLDS.maxPageCoverage
     };
     const ready = Object.values(checks).every(Boolean);
     return {
       ready, checks,
-      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, registrationReady: null},
+      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity},
       box: {x: component.minX, y: component.minY, width: boxWidth, height: boxHeight},
-      reason: firstFailure(checks)
+      worstRegionBox: uniformity >= THRESHOLDS.minRegionLumaRatio ? null : worstRegionBox,
+      reason: firstFailure(checks, {coverage})
     };
   }
 
   function emptyResult(reason) {
-    return {ready:false, checks:{pageVisible:false,perspective:false,sharpness:false,lighting:false,pageSize:false,registrationReady:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,registrationReady:null}, box:null, reason};
+    return {ready:false, checks:{pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0}, box:null, worstRegionBox:null, reason};
   }
 
-  function firstFailure(checks) {
+  function firstFailure(checks, metrics) {
     if (!checks.pageVisible) return 'أظهر الصفحة كاملة مع فراغ حول الحواف';
     if (!checks.perspective) return 'اجعل الهاتف أكثر تعامداً مع الورقة';
     if (!checks.sharpness) return 'ثبّت الهاتف وانتظر اكتمال التركيز';
+    // A local shadow and a globally dark room need opposite corrections, so
+    // they must never share a message.
+    if (!checks.uniformLighting) return 'يوجد ظل على جزء من الورقة؛ حرّك يدك أو الهاتف بعيداً عن مصدر الضوء';
     if (!checks.lighting) return 'حسّن الإضاءة وتجنب الوهج أو الظلام';
-    if (!checks.pageSize) return 'قرّب الهاتف حتى تملأ الصفحة معظم الإطار';
-    if (!checks.registrationReady) return 'الالتقاط التلقائي متوقف حتى يتوفر فحص التسجيل الفعلي';
+    if (!checks.pageSize) {
+      // Directional: the old message said "move closer" even when too close.
+      return metrics && metrics.coverage > THRESHOLDS.maxPageCoverage
+        ? 'ابتعد قليلاً حتى تظهر حواف الصفحة كاملة'
+        : 'قرّب الهاتف حتى تملأ الصفحة معظم الإطار';
+    }
     return 'الإطار صالح؛ اثبت للحظة';
   }
 
@@ -177,7 +226,7 @@
     if (name === 'perspective') return `×${m.perspectiveRatio.toFixed(2)}`;
     if (name === 'sharpness') return Math.round(m.sharpness).toString();
     if (name === 'pageSize') return `${Math.round(m.coverage * 100)}%`;
-    if (name === 'registrationReady') return 'غير متاح';
+    if (name === 'uniformLighting') return `${Math.round(m.uniformity * 100)}%`;
     return Math.round(m.meanLuma).toString();
   }
 
@@ -204,6 +253,14 @@
     guideContext.strokeStyle = result.ready ? '#65d38b' : '#ef746f';
     guideContext.lineWidth = 3; guideContext.setLineDash([8, 5]);
     guideContext.strokeRect(x + 1, y + 1, width - 2, height - 2);
+    // Show the teacher WHERE the shadow is, not just that one exists.
+    if (result.worstRegionBox) {
+      const w = result.worstRegionBox;
+      guideContext.setLineDash([]);
+      guideContext.strokeStyle = '#ffcf5c';
+      guideContext.lineWidth = 2;
+      guideContext.strokeRect(w.x, w.y, w.width, w.height);
+    }
   }
 
   function sourceDimensions() {
@@ -296,14 +353,20 @@
     if (captured) return;
     const frame = sourceDimensions(); if (!frame.width || !frame.height) return;
     captured = true; running = false;
-    const maxWidth = 2200, scale = Math.min(1, maxWidth / frame.width);
+    // Never downscale below MIN_CAPTURE_WIDTH: below it the grader cannot
+    // resolve the cell markers, so the capture is worthless however good it
+    // looks. Only cap runaway sensor sizes.
+    const scale = frame.width > MAX_CAPTURE_WIDTH ? MAX_CAPTURE_WIDTH / frame.width : 1;
     captureCanvas.width = Math.round(frame.width * scale); captureCanvas.height = Math.round(frame.height * scale);
     captureContext.drawImage(frame.source, 0, 0, captureCanvas.width, captureCanvas.height);
-    const url = captureCanvas.toDataURL('image/jpeg', .92);
+    const belowFloor = captureCanvas.width < MIN_CAPTURE_WIDTH;
+    const url = captureCanvas.toDataURL('image/jpeg', .96);
     prepareCapturedImage(url);
     el('capturedPreview').src = url;
     el('captureKind').textContent = kind === 'auto' ? 'التقاط تلقائي' : 'التقاط يدوي احتياطي';
-    el('captureSummary').textContent = currentResult ? (currentResult.ready ? 'اجتاز الإطار جميع مؤشرات الجودة.' : 'تم الالتقاط اليدوي رغم وجود مؤشر جودة غير مكتمل.') : 'لم يكتمل التحليل.';
+    el('captureSummary').textContent = belowFloor
+      ? `دقة الصورة ${captureCanvas.width}px أقل من الحد المطلوب ${MIN_CAPTURE_WIDTH}px؛ لن يتمكن المصحّح من قراءة رموز الخلايا.`
+      : (currentResult ? (currentResult.ready ? 'اجتاز الإطار جميع مؤشرات الجودة.' : 'تم الالتقاط اليدوي رغم وجود مؤشر جودة غير مكتمل.') : 'لم يكتمل التحليل.');
     el('resultCard').hidden = false; el('retake').hidden = false; el('manualCapture').disabled = true;
     el('captureFlash').classList.remove('active'); void el('captureFlash').offsetWidth; el('captureFlash').classList.add('active');
     el('modeBadge').textContent = kind === 'auto' ? 'تم الالتقاط تلقائياً' : 'تم الالتقاط يدوياً';
@@ -335,5 +398,12 @@
     if (capturedObjectUrl) URL.revokeObjectURL(capturedObjectUrl);
   });
 
-  window.SmartCaptureSpike = Object.freeze({THRESHOLDS, analyzeImageData, emptyResult, registrationProbeAvailable: false});
+  // Registration is deliberately absent from the live loop: marker detection
+  // needs ~3000px and is non-monotonic in resolution, so it cannot steer the
+  // teacher. It belongs to the commit stage, on the full-resolution frame.
+  window.SmartCaptureSpike = Object.freeze({
+    THRESHOLDS, analyzeImageData, emptyResult, firstFailure,
+    MIN_CAPTURE_WIDTH, MAX_CAPTURE_WIDTH,
+    registrationStage: 'commit'
+  });
 })();
