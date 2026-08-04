@@ -12,7 +12,6 @@
     maxPageLuma: 238,
     maxDarkFraction: 0.22,
     maxBrightFraction: 0.42,
-    minRegistrationConfidence: 0.82,
     stableFrames: 8,
     analysisIntervalMs: 180
   });
@@ -41,10 +40,6 @@
   function percentile(values, ratio) {
     const copy = Array.from(values).sort((a, b) => a - b);
     return copy[Math.min(copy.length - 1, Math.max(0, Math.floor(copy.length * ratio)))] || 0;
-  }
-
-  function clamp01(value) {
-    return Math.max(0, Math.min(1, value));
   }
 
   function largestComponent(mask, width, height) {
@@ -144,32 +139,26 @@
     const darkFraction = dark / Math.max(1, lumaCount);
     const brightFraction = bright / Math.max(1, lumaCount);
 
-    const minimumMargin = Math.min(marginX, marginY);
-    const marginConfidence = clamp01(minimumMargin / 0.04);
-    const fillConfidence = clamp01(maskFill / 0.55);
-    const perspectiveConfidence = clamp01((THRESHOLDS.maxPerspectiveRatio - perspectiveRatio) / (THRESHOLDS.maxPerspectiveRatio - 1));
-    const coverageConfidence = clamp01((coverage - 0.15) / 0.20);
-    const registrationConfidence = 0.35 * marginConfidence + 0.20 * fillConfidence + 0.30 * perspectiveConfidence + 0.15 * coverageConfidence;
-
     const checks = {
       pageVisible: marginX >= THRESHOLDS.pageMarginRatio && marginY >= THRESHOLDS.pageMarginRatio && maskFill >= THRESHOLDS.minMaskFill,
       perspective: perspectiveRatio <= THRESHOLDS.maxPerspectiveRatio && topSpan > boxWidth * 0.35 && leftSpan > boxHeight * 0.35,
       sharpness: sharpness >= THRESHOLDS.minSharpness,
       lighting: meanLuma >= THRESHOLDS.minPageLuma && meanLuma <= THRESHOLDS.maxPageLuma && darkFraction <= THRESHOLDS.maxDarkFraction && brightFraction <= THRESHOLDS.maxBrightFraction,
       pageSize: coverage >= THRESHOLDS.minPageCoverage && coverage <= THRESHOLDS.maxPageCoverage,
-      registrationConfidence: registrationConfidence >= THRESHOLDS.minRegistrationConfidence
+      // Fail closed: the actual OpenCV/ArUco registration probe is not present in this static spike.
+      registrationReady: false
     };
     const ready = Object.values(checks).every(Boolean);
     return {
       ready, checks,
-      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, registrationConfidence},
+      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, registrationReady: null},
       box: {x: component.minX, y: component.minY, width: boxWidth, height: boxHeight},
       reason: firstFailure(checks)
     };
   }
 
   function emptyResult(reason) {
-    return {ready:false, checks:{pageVisible:false,perspective:false,sharpness:false,lighting:false,pageSize:false,registrationConfidence:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,registrationConfidence:0}, box:null, reason};
+    return {ready:false, checks:{pageVisible:false,perspective:false,sharpness:false,lighting:false,pageSize:false,registrationReady:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,registrationReady:null}, box:null, reason};
   }
 
   function firstFailure(checks) {
@@ -178,7 +167,7 @@
     if (!checks.sharpness) return 'ثبّت الهاتف وانتظر اكتمال التركيز';
     if (!checks.lighting) return 'حسّن الإضاءة وتجنب الوهج أو الظلام';
     if (!checks.pageSize) return 'قرّب الهاتف حتى تملأ الصفحة معظم الإطار';
-    if (!checks.registrationConfidence) return 'حرّك الهاتف قليلاً حتى تستقر هندسة الصفحة';
+    if (!checks.registrationReady) return 'الالتقاط التلقائي متوقف حتى يتوفر فحص التسجيل الفعلي';
     return 'الإطار صالح؛ اثبت للحظة';
   }
 
@@ -188,7 +177,7 @@
     if (name === 'perspective') return `×${m.perspectiveRatio.toFixed(2)}`;
     if (name === 'sharpness') return Math.round(m.sharpness).toString();
     if (name === 'pageSize') return `${Math.round(m.coverage * 100)}%`;
-    if (name === 'registrationConfidence') return `${Math.round(m.registrationConfidence * 100)}%`;
+    if (name === 'registrationReady') return 'غير متاح';
     return Math.round(m.meanLuma).toString();
   }
 
@@ -346,5 +335,5 @@
     if (capturedObjectUrl) URL.revokeObjectURL(capturedObjectUrl);
   });
 
-  window.SmartCaptureSpike = Object.freeze({THRESHOLDS, analyzeImageData, emptyResult});
+  window.SmartCaptureSpike = Object.freeze({THRESHOLDS, analyzeImageData, emptyResult, registrationProbeAvailable: false});
 })();
