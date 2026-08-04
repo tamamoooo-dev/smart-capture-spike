@@ -63,6 +63,18 @@
   let capturedObjectUrl = null;
   let capturedFile = null;
 
+  function deviceLandscape() {
+    const type = (window.screen && window.screen.orientation && window.screen.orientation.type) || '';
+    if (type) return type.startsWith('landscape');
+    if (window.matchMedia) return window.matchMedia('(orientation: landscape)').matches;
+    if (typeof window.orientation === 'number') return Math.abs(window.orientation) === 90;
+    return window.innerWidth >= window.innerHeight;
+  }
+
+  function applyDeviceOrientation() {
+    document.body.classList.toggle('device-landscape', deviceLandscape());
+  }
+
   function percentile(values, ratio) {
     const copy = Array.from(values).sort((a, b) => a - b);
     return copy[Math.min(copy.length - 1, Math.max(0, Math.floor(copy.length * ratio)))] || 0;
@@ -115,7 +127,6 @@
     // Analysis runs on a small canvas; scale the page box back to source pixels
     // so the resolution check is about the image we will actually capture.
     const sourceScale = (sourceWidth || width) / width;
-    const landscape = width >= height;
     const count = width * height;
     const gray = new Float32Array(count);
     const chroma = new Uint8Array(count);
@@ -137,6 +148,13 @@
     const boxHeight = component.maxY - component.minY + 1;
     const coverage = (boxWidth * boxHeight) / count;
     const pageWidthPx = Math.round(boxWidth * sourceScale);
+    // Orientation of the SHEET inside the frame, not of the device or the
+    // stream. video.videoWidth/videoHeight describe the MediaStream and do not
+    // change when the phone is rotated, so the previous test (frame aspect) was
+    // permanently true. What matters is that the A4-landscape register lies
+    // horizontally in the image -- however the teacher achieves that.
+    const pageAspect = boxWidth / Math.max(1, boxHeight);
+    const landscape = pageAspect >= 1.0;
     const maskFill = component.count / (boxWidth * boxHeight);
     const marginX = Math.min(component.minX, width - 1 - component.maxX) / width;
     const marginY = Math.min(component.minY, height - 1 - component.maxY) / height;
@@ -212,7 +230,7 @@
     const ready = Object.values(checks).every(Boolean);
     return {
       ready, checks,
-      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, landscape},
+      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, landscape, pageAspect},
       box: {x: component.minX, y: component.minY, width: boxWidth, height: boxHeight},
       worstRegionBox: uniformity >= THRESHOLDS.minRegionLumaRatio ? null : worstRegionBox,
       reason: firstFailure(checks, {coverage})
@@ -220,7 +238,7 @@
   }
 
   function emptyResult(reason) {
-    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,landscape:false}, box:null, worstRegionBox:null, reason};
+    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,landscape:false,pageAspect:0}, box:null, worstRegionBox:null, reason};
   }
 
   function firstFailure(checks, metrics) {
@@ -248,7 +266,7 @@
     if (name === 'sharpness') return Math.round(m.sharpness).toString();
     if (name === 'pageSize') return `${m.pageWidthPx}px`;
     if (name === 'uniformLighting') return `${Math.round(m.uniformity * 100)}%`;
-    if (name === 'orientation') return m.landscape ? 'أفقي' : 'رأسي';
+    if (name === 'orientation') return m.pageAspect ? `×${m.pageAspect.toFixed(2)}` : '—';
     return Math.round(m.meanLuma).toString();
   }
 
@@ -440,6 +458,16 @@
     still.src = URL.createObjectURL(file);
   }
 
+  // Nothing previously observed device orientation, so rotating the phone had
+  // no effect on the layout at all. screen.orientation is preferred;
+  // orientationchange and resize cover browsers that lack it.
+  if (window.screen && window.screen.orientation && window.screen.orientation.addEventListener) {
+    window.screen.orientation.addEventListener('change', applyDeviceOrientation);
+  }
+  window.addEventListener('orientationchange', applyDeviceOrientation);
+  window.addEventListener('resize', applyDeviceOrientation);
+  applyDeviceOrientation();
+
   el('startCamera').addEventListener('click', startCamera);
   el('manualCapture').addEventListener('click', () => captureFrame('manual'));
   el('retake').addEventListener('click', () => {
@@ -457,7 +485,7 @@
   // needs ~3000px and is non-monotonic in resolution, so it cannot steer the
   // teacher. It belongs to the commit stage, on the full-resolution frame.
   window.SmartCaptureSpike = Object.freeze({
-    THRESHOLDS, analyzeImageData, emptyResult, firstFailure,
+    THRESHOLDS, analyzeImageData, emptyResult, firstFailure, deviceLandscape,
     MIN_PAGE_WIDTH_PX, MIN_STREAM_WIDTH, MAX_CAPTURE_WIDTH,
     registrationStage: 'commit'
   });
