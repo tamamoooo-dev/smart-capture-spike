@@ -293,6 +293,14 @@
     guideContext.strokeStyle = result.ready ? '#65d38b' : '#ef746f';
     guideContext.lineWidth = 3; guideContext.setLineDash([8, 5]);
     guideContext.strokeRect(x + 1, y + 1, width - 2, height - 2);
+    // Label the outline with the measured aspect so the reading is visible on
+    // the frame itself, not only in the side panel.
+    if (result.metrics && result.metrics.pageAspect) {
+      guideContext.setLineDash([]);
+      guideContext.font = '600 13px Tahoma, Arial';
+      guideContext.fillStyle = result.checks.orientation ? '#65d38b' : '#ef746f';
+      guideContext.fillText(`${result.metrics.pageAspect.toFixed(2)}`, x + 6, y + 16);
+    }
     // Show the teacher WHERE the shadow is, not just that one exists.
     if (result.worstRegionBox) {
       const w = result.worstRegionBox;
@@ -364,7 +372,13 @@
     const started = performance.now();
     const result = analyzeImageData(analysisContext.getImageData(0, 0, width, height), frame.width);
     updateUI(result);
-    el('analysisFps').textContent = `تحليل ${Math.round(performance.now() - started)} ms`;
+    // Live detector readout: page box, aspect and page width in source pixels.
+    // Without this the orientation indicator is unfalsifiable from the UI --
+    // there is no way to tell a real measurement from a fallback value.
+    const m = result.metrics, b = result.box;
+    el('analysisFps').textContent = b
+      ? `${b.width}×${b.height} · نسبة ${m.pageAspect.toFixed(2)} · ${m.pageWidthPx}px · ${Math.round(performance.now() - started)}ms`
+      : `لا صفحة · ${Math.round(performance.now() - started)}ms`;
     stableCount = result.ready ? stableCount + 1 : 0;
     el('stableBar').style.width = `${Math.min(100, stableCount / THRESHOLDS.stableFrames * 100)}%`;
     if (stableCount >= THRESHOLDS.stableFrames) captureFrame('auto');
