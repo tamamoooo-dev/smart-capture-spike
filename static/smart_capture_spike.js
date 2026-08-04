@@ -6,12 +6,21 @@
   // needed ~3000 px of page width to clear 40% marker coverage. The previous
   // 2200 px cap produced 7.4 px/mm = 2.7 px/module -- below the floor, so every
   // auto-capture was an image the grader could not register at all.
-  const MIN_CAPTURE_WIDTH = 3500;
+  // What actually matters is the width of the PAGE in source pixels, not the
+  // width of the frame. A 3500px frame with the sheet at 51% linear coverage
+  // yields only ~1785px of page -- far below the floor. So the requirement is
+  // expressed on the page and checked live, from the detected page box.
+  const MIN_PAGE_WIDTH_PX = 3000;
   const MAX_CAPTURE_WIDTH = 4608;
+  // Deterministic conditions are enforced BEFORE the shutter. A device whose
+  // camera cannot deliver at least this many pixels can never satisfy
+  // MIN_PAGE_WIDTH_PX, because the page cannot be wider than the frame.
+  const MIN_STREAM_WIDTH = MIN_PAGE_WIDTH_PX;
 
   const THRESHOLDS = Object.freeze({
     pageMarginRatio: 0.018,
-    minPageCoverage: 0.26,
+    // Upper bound only: the lower bound is derived from MIN_PAGE_WIDTH_PX
+    // rather than guessed, so it tracks the real grading requirement.
     maxPageCoverage: 0.94,
     minMaskFill: 0.34,
     maxPerspectiveRatio: 1.48,
@@ -99,8 +108,11 @@
     return found ? Math.max(1, max - min + 1) : 0;
   }
 
-  function analyzeImageData(imageData) {
+  function analyzeImageData(imageData, sourceWidth) {
     const {data, width, height} = imageData;
+    // Analysis runs on a small canvas; scale the page box back to source pixels
+    // so the resolution check is about the image we will actually capture.
+    const sourceScale = (sourceWidth || width) / width;
     const count = width * height;
     const gray = new Float32Array(count);
     const chroma = new Uint8Array(count);
@@ -121,6 +133,7 @@
     const boxWidth = component.maxX - component.minX + 1;
     const boxHeight = component.maxY - component.minY + 1;
     const coverage = (boxWidth * boxHeight) / count;
+    const pageWidthPx = Math.round(boxWidth * sourceScale);
     const maskFill = component.count / (boxWidth * boxHeight);
     const marginX = Math.min(component.minX, width - 1 - component.maxX) / width;
     const marginY = Math.min(component.minY, height - 1 - component.maxY) / height;
@@ -187,12 +200,12 @@
       sharpness: sharpness >= THRESHOLDS.minSharpness,
       lighting: meanLuma >= THRESHOLDS.minPageLuma && meanLuma <= THRESHOLDS.maxPageLuma && darkFraction <= THRESHOLDS.maxDarkFraction && brightFraction <= THRESHOLDS.maxBrightFraction,
       uniformLighting: uniformity >= THRESHOLDS.minRegionLumaRatio,
-      pageSize: coverage >= THRESHOLDS.minPageCoverage && coverage <= THRESHOLDS.maxPageCoverage
+      pageSize: pageWidthPx >= MIN_PAGE_WIDTH_PX && coverage <= THRESHOLDS.maxPageCoverage
     };
     const ready = Object.values(checks).every(Boolean);
     return {
       ready, checks,
-      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity},
+      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx},
       box: {x: component.minX, y: component.minY, width: boxWidth, height: boxHeight},
       worstRegionBox: uniformity >= THRESHOLDS.minRegionLumaRatio ? null : worstRegionBox,
       reason: firstFailure(checks, {coverage})
@@ -200,7 +213,7 @@
   }
 
   function emptyResult(reason) {
-    return {ready:false, checks:{pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0}, box:null, worstRegionBox:null, reason};
+    return {ready:false, checks:{pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0}, box:null, worstRegionBox:null, reason};
   }
 
   function firstFailure(checks, metrics) {
@@ -215,7 +228,7 @@
       // Directional: the old message said "move closer" even when too close.
       return metrics && metrics.coverage > THRESHOLDS.maxPageCoverage
         ? 'ابتعد قليلاً حتى تظهر حواف الصفحة كاملة'
-        : 'قرّب الهاتف حتى تملأ الصفحة معظم الإطار';
+        : `قرّب الهاتف؛ عرض الصفحة ${metrics ? metrics.pageWidthPx : 0} بكسل والمطلوب ${MIN_PAGE_WIDTH_PX}`;
     }
     return 'الإطار صالح؛ اثبت للحظة';
   }
@@ -225,7 +238,7 @@
     if (name === 'pageVisible') return `${Math.round(Math.min(m.marginX, m.marginY) * 100)}%`;
     if (name === 'perspective') return `×${m.perspectiveRatio.toFixed(2)}`;
     if (name === 'sharpness') return Math.round(m.sharpness).toString();
-    if (name === 'pageSize') return `${Math.round(m.coverage * 100)}%`;
+    if (name === 'pageSize') return `${m.pageWidthPx}px`;
     if (name === 'uniformLighting') return `${Math.round(m.uniformity * 100)}%`;
     return Math.round(m.meanLuma).toString();
   }
@@ -322,7 +335,7 @@
     analysisCanvas.width = width; analysisCanvas.height = height;
     analysisContext.drawImage(frame.source, 0, 0, width, height);
     const started = performance.now();
-    const result = analyzeImageData(analysisContext.getImageData(0, 0, width, height));
+    const result = analyzeImageData(analysisContext.getImageData(0, 0, width, height), frame.width);
     updateUI(result);
     el('analysisFps').textContent = `تحليل ${Math.round(performance.now() - started)} ms`;
     stableCount = result.ready ? stableCount + 1 : 0;
@@ -334,9 +347,36 @@
   async function startCamera() {
     stopCamera(); captured = false; stableCount = 0; sourceMode = 'camera'; viewer.classList.remove('testing');
     try {
-      stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}},audio:false});
-      video.srcObject = stream; await video.play(); running = true;
-      el('modeBadge').textContent = 'تحليل مباشر'; el('manualCapture').disabled = false; el('retake').hidden = true;
+      // Ask for the largest frame the camera will give. A capture that cannot
+      // reach MIN_PAGE_WIDTH_PX is guaranteed to fail grading, so resolution is
+      // negotiated up front rather than discovered after the shutter.
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {facingMode: {ideal: 'environment'},
+                width: {ideal: MAX_CAPTURE_WIDTH}, height: {ideal: 3456}},
+        audio: false
+      });
+      video.srcObject = stream; await video.play();
+
+      const granted = video.videoWidth;
+      if (granted < MIN_STREAM_WIDTH) {
+        // Deterministic and known now: the page can never be wider than the
+        // frame, so no amount of guidance can rescue this device. Refuse to
+        // start rather than guide the teacher toward a capture that must fail.
+        stopCamera();
+        el('modeBadge').textContent = 'الكاميرا غير كافية';
+        el('instruction').textContent =
+          `أقصى دقة للكاميرا ${granted} بكسل، والمطلوب ${MIN_STREAM_WIDTH} على الأقل. ` +
+          `لن يتمكن المصحّح من قراءة رموز الخلايا بهذه الدقة؛ استخدم كاميرا الجهاز الأساسية ` +
+          `أو جهازاً بدقة أعلى.`;
+        el('manualCapture').disabled = true;
+        window.dispatchEvent(new CustomEvent('smartcapture:unsupported',
+          {detail: {grantedWidth: granted, requiredWidth: MIN_STREAM_WIDTH}}));
+        return;
+      }
+
+      running = true;
+      el('modeBadge').textContent = `تحليل مباشر · ${granted}px`;
+      el('manualCapture').disabled = false; el('retake').hidden = true;
       requestAnimationFrame(analyzeFrame);
     } catch (error) {
       el('instruction').textContent = 'تعذر تشغيل الكاميرا؛ استخدم صورة اختبار';
@@ -353,20 +393,22 @@
     if (captured) return;
     const frame = sourceDimensions(); if (!frame.width || !frame.height) return;
     captured = true; running = false;
-    // Never downscale below MIN_CAPTURE_WIDTH: below it the grader cannot
-    // resolve the cell markers, so the capture is worthless however good it
-    // looks. Only cap runaway sensor sizes.
+    // Resolution was already guaranteed: the stream was refused below
+    // MIN_STREAM_WIDTH, and pageSize gates on measured page width every frame.
+    // Nothing here can re-check a deterministic condition that has already
+    // been enforced -- only cap runaway sensor sizes.
     const scale = frame.width > MAX_CAPTURE_WIDTH ? MAX_CAPTURE_WIDTH / frame.width : 1;
     captureCanvas.width = Math.round(frame.width * scale); captureCanvas.height = Math.round(frame.height * scale);
     captureContext.drawImage(frame.source, 0, 0, captureCanvas.width, captureCanvas.height);
-    const belowFloor = captureCanvas.width < MIN_CAPTURE_WIDTH;
     const url = captureCanvas.toDataURL('image/jpeg', .96);
     prepareCapturedImage(url);
     el('capturedPreview').src = url;
     el('captureKind').textContent = kind === 'auto' ? 'التقاط تلقائي' : 'التقاط يدوي احتياطي';
-    el('captureSummary').textContent = belowFloor
-      ? `دقة الصورة ${captureCanvas.width}px أقل من الحد المطلوب ${MIN_CAPTURE_WIDTH}px؛ لن يتمكن المصحّح من قراءة رموز الخلايا.`
-      : (currentResult ? (currentResult.ready ? 'اجتاز الإطار جميع مؤشرات الجودة.' : 'تم الالتقاط اليدوي رغم وجود مؤشر جودة غير مكتمل.') : 'لم يكتمل التحليل.');
+    el('captureSummary').textContent = currentResult
+      ? (currentResult.ready
+          ? `اجتاز الإطار جميع مؤشرات الجودة · عرض الصفحة ${currentResult.metrics.pageWidthPx}px`
+          : 'تم الالتقاط اليدوي رغم وجود مؤشر جودة غير مكتمل.')
+      : 'لم يكتمل التحليل.';
     el('resultCard').hidden = false; el('retake').hidden = false; el('manualCapture').disabled = true;
     el('captureFlash').classList.remove('active'); void el('captureFlash').offsetWidth; el('captureFlash').classList.add('active');
     el('modeBadge').textContent = kind === 'auto' ? 'تم الالتقاط تلقائياً' : 'تم الالتقاط يدوياً';
@@ -403,7 +445,7 @@
   // teacher. It belongs to the commit stage, on the full-resolution frame.
   window.SmartCaptureSpike = Object.freeze({
     THRESHOLDS, analyzeImageData, emptyResult, firstFailure,
-    MIN_CAPTURE_WIDTH, MAX_CAPTURE_WIDTH,
+    MIN_PAGE_WIDTH_PX, MIN_STREAM_WIDTH, MAX_CAPTURE_WIDTH,
     registrationStage: 'commit'
   });
 })();
