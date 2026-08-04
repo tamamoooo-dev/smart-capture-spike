@@ -34,6 +34,9 @@
   let lastAnalysis = 0;
   let currentResult = null;
   let sourceMode = 'none';
+  let capturedDataUrl = null;
+  let capturedObjectUrl = null;
+  let capturedFile = null;
 
   function percentile(values, ratio) {
     const copy = Array.from(values).sort((a, b) => a - b);
@@ -219,6 +222,50 @@
     return {source: still, width: still.naturalWidth, height: still.naturalHeight};
   }
 
+  function dataUrlToBlob(dataUrl) {
+    const [header, encoded] = dataUrl.split(',');
+    const mimeType = header.match(/^data:([^;]+)/)?.[1] || 'image/jpeg';
+    const binary = atob(encoded);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    return new Blob([bytes], {type: mimeType});
+  }
+
+  function prepareCapturedImage(dataUrl) {
+    if (capturedObjectUrl) URL.revokeObjectURL(capturedObjectUrl);
+    const blob = dataUrlToBlob(dataUrl);
+    capturedDataUrl = dataUrl;
+    capturedObjectUrl = URL.createObjectURL(blob);
+    try {
+      capturedFile = new File([blob], 'smart-capture.jpg', {type: blob.type, lastModified: Date.now()});
+    } catch (_error) {
+      capturedFile = null;
+    }
+    el('downloadCapture').href = capturedObjectUrl;
+  }
+
+  async function saveCapturedImage(event) {
+    event.preventDefault();
+    if (!capturedObjectUrl) return;
+
+    const shareData = capturedFile ? {files: [capturedFile]} : null;
+    const canShareFile = shareData && navigator.share && navigator.canShare && navigator.canShare(shareData);
+    if (canShareFile) {
+      try {
+        await navigator.share({files: shareData.files, title: 'صورة الالتقاط الذكي'});
+        return;
+      } catch (error) {
+        if (error?.name === 'AbortError') return;
+        window.location.assign(capturedDataUrl);
+        return;
+      }
+    }
+
+    const imageTab = window.open(capturedObjectUrl, '_blank');
+    if (imageTab) imageTab.opener = null;
+    else window.location.assign(capturedDataUrl);
+  }
+
   function analyzeFrame(timestamp = performance.now()) {
     if (!running || captured) return;
     if (timestamp - lastAnalysis < THRESHOLDS.analysisIntervalMs) {requestAnimationFrame(analyzeFrame); return;}
@@ -264,7 +311,8 @@
     captureCanvas.width = Math.round(frame.width * scale); captureCanvas.height = Math.round(frame.height * scale);
     captureContext.drawImage(frame.source, 0, 0, captureCanvas.width, captureCanvas.height);
     const url = captureCanvas.toDataURL('image/jpeg', .92);
-    el('capturedPreview').src = url; el('downloadCapture').href = url;
+    prepareCapturedImage(url);
+    el('capturedPreview').src = url;
     el('captureKind').textContent = kind === 'auto' ? 'التقاط تلقائي' : 'التقاط يدوي احتياطي';
     el('captureSummary').textContent = currentResult ? (currentResult.ready ? 'اجتاز الإطار جميع مؤشرات الجودة.' : 'تم الالتقاط اليدوي رغم وجود مؤشر جودة غير مكتمل.') : 'لم يكتمل التحليل.';
     el('resultCard').hidden = false; el('retake').hidden = false; el('manualCapture').disabled = true;
@@ -292,7 +340,11 @@
     if (sourceMode === 'camera') startCamera(); else {running = true; requestAnimationFrame(analyzeFrame);}
   });
   el('testFile').addEventListener('change', event => loadTestFile(event.target.files[0]));
-  window.addEventListener('pagehide', stopCamera);
+  el('downloadCapture').addEventListener('click', saveCapturedImage);
+  window.addEventListener('pagehide', () => {
+    stopCamera();
+    if (capturedObjectUrl) URL.revokeObjectURL(capturedObjectUrl);
+  });
 
   window.SmartCaptureSpike = Object.freeze({THRESHOLDS, analyzeImageData, emptyResult});
 })();
