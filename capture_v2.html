@@ -29,6 +29,10 @@
       <button id="shutterV2" type="button" disabled>التقاط</button>
       <a id="exportSessionV2" href="#" download>تصدير سجل الجلسة</a>
     </div>
+    <label class="auto-toggle">
+      <input type="checkbox" id="autoV2" checked>
+      التقاط تلقائي لأفضل إطار
+    </label>
     <p class="note" id="noteV2"></p>
     <p class="privacy">تُعالج الإطارات داخل المتصفح ولا تُرفع إلى أي خادم.</p>
 
@@ -54,6 +58,7 @@
   <canvas id="captureCanvasV2" hidden></canvas>
   <script src="static/capture_v2/feasibility.js?v=01683c2"></script>
   <script src="static/capture_v2/observe.js?v=01683c2"></script>
+  <script src="static/capture_v2/rectify.js?v=01683c2"></script>
   <script src="static/capture_v2/session.js?v=01683c2"></script>
   <script src="static/capture_v2/capture.js?v=01683c2"></script>
 </body>

@@ -90,6 +90,14 @@ button,
 button.primary { background: var(--accent); color: #04231a; border-color: transparent; }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.auto-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 0.9rem;
+}
+
 .note { min-height: 1.2em; font-size: 0.85rem; color: var(--warn); margin: 0; }
 .privacy { font-size: 0.8rem; opacity: 0.6; }
 

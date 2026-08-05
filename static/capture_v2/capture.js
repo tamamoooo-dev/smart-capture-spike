@@ -15,6 +15,7 @@
   const F = window.CaptureFeasibility;
   const O = window.CaptureObserve;
   const S = window.CaptureSession;
+  const R = window.CaptureRectify;
 
   // Diagnostics are hidden unless asked for. Recording is unaffected by it.
   const DEBUG = /[?&]debug=1/.test(location.search);
@@ -29,6 +30,10 @@
   const ANALYSIS_WIDTH = 360;
   const ANALYSIS_INTERVAL_MS = 180;
   const MAX_CAPTURE_WIDTH = 4608;
+  // How long the best qualifying frame is sought before one is committed.
+  // A mechanism parameter, not a quality threshold: it decides how long to
+  // look, never whether a frame is good enough.
+  const AUTO_WINDOW_MS = 1200;
 
   const INSTRUCTIONS = {
     NO_PAGE: 'وجّه الكاميرا نحو السجل كاملاً',
@@ -61,6 +66,11 @@
   let lastAnalysis = 0;
   let latest = null;
   let saved = null;   // {id, blob, objectUrl, file} for the last capture
+  // Auto-capture state. `best` is the highest score seen since the enforce set
+  // started holding; the frame committed is the first to match it once the
+  // window has elapsed, so no full-resolution frames need buffering.
+  let auto = {armed: false, since: 0, best: 0, latched: false};
+  let autoEnabled = true;
 
   function device() {
     const track = stream && stream.getVideoTracks()[0];
@@ -90,13 +100,20 @@
     outline.width = outline.clientWidth;
     outline.height = outline.clientHeight;
     outlineContext.clearRect(0, 0, outline.width, outline.height);
-    if (!observation || !observation.box) return;
+    if (!observation || !observation.quad) return;
     const sx = outline.width / analysisCanvas.width;
     const sy = outline.height / analysisCanvas.height;
-    const b = observation.box;
+    // The quad, not the bounding box: a tilted sheet's box is strictly larger
+    // than the paper, so the box outline sat outside the sheet it claimed.
     outlineContext.strokeStyle = 'rgba(255,255,255,0.9)';
     outlineContext.lineWidth = 2;
-    outlineContext.strokeRect(b.x * sx, b.y * sy, b.width * sx, b.height * sy);
+    outlineContext.beginPath();
+    observation.quad.forEach((p, i) => {
+      const x = p[0] * sx, y = p[1] * sy;
+      if (i === 0) outlineContext.moveTo(x, y); else outlineContext.lineTo(x, y);
+    });
+    outlineContext.closePath();
+    outlineContext.stroke();
   }
 
   /**
@@ -160,6 +177,19 @@
     const motion = stability.update(observation);
     if (observation) observation.stable = motion.stable;
 
+    // Evaluate the corrected document, sampled rather than built. The rules
+    // that consume exposure and sharpness are unchanged; what feeds them is
+    // now measured on the rectified page, where a far region backed by fewer
+    // source pixels scores lower instead of being averaged away.
+    let regional = null;
+    if (observation && observation.quad) {
+      regional = R.sampleRegions(analysisImage(), observation.quad);
+      if (regional) {
+        observation.minRegionExposure = regional.minRegionExposure;
+        observation.sharpness = regional.meanSharpness;
+      }
+    }
+
     const result = F.evaluate({width: frame.width, height: frame.height}, observation, REQ);
     const vector = F.record({width: frame.width, height: frame.height}, observation, result);
     vector.driftPx = motion.driftPx;
@@ -172,20 +202,73 @@
       vector.maskFill = observation.maskFill;
       vector.coverage = observation.coverage;
       vector.aspect = observation.aspect;
+      vector.tilt = R.tilt(observation.quad);
     }
-    latest = {result, vector, observation};
+    if (regional) {
+      vector.sharpnessUniformity = regional.sharpnessUniformity;
+      vector.minRegionSharpness = regional.minRegionSharpness;
+      vector.worstRegionX = regional.worstRegion.rx;
+      vector.worstRegionY = regional.worstRegion.ry;
+    }
+    latest = {result, vector, observation, regional};
 
     const report = F.report(result, {debug: DEBUG});
     renderInstruction(report);
     renderOutline(observation);
     if (DEBUG) renderDiagnostics(report, vector);
 
+    considerAutoCapture(result, regional, timestamp);
+
     requestAnimationFrame(analyse);
+  }
+
+  /** The ImageData the analysis is currently holding, for the sampler. */
+  function analysisImage() {
+    return analysisContext.getImageData(0, 0, analysisCanvas.width, analysisCanvas.height);
+  }
+
+  /**
+   * Commit the best frame, without buffering full-resolution frames.
+   *
+   * Selection, not a new gate: the enforce set decides whether a frame may be
+   * committed at all, exactly as it does for the manual shutter. This only
+   * chooses *which* qualifying frame, by the regional uniformity already being
+   * measured -- the quantity that separated the readable end of the first real
+   * capture from the unreadable one.
+   *
+   * No threshold on that quantity is applied. Whether it should block a capture
+   * is a rule question, and rules change on measurement, not while wiring.
+   */
+  function considerAutoCapture(result, regional, timestamp) {
+    if (!autoEnabled || !running) return;
+    if (result.blocked || !regional) {
+      // Losing the enforce set is what ends one sheet and begins the next.
+      auto = {armed: false, since: 0, best: 0, latched: false};
+      return;
+    }
+    // One capture per sheet. Without this the loop re-arms the instant it
+    // commits and keeps firing at the window interval: measured at 7 captures
+    // of one motionless sheet before anyone touched the phone.
+    if (auto.latched) return;
+
+    const score = regional.sharpnessUniformity;
+    if (!auto.armed) {
+      auto = {armed: true, since: timestamp, best: score, latched: false};
+      return;
+    }
+    auto.best = Math.max(auto.best, score);
+    const elapsed = timestamp - auto.since;
+    // Within 2% of the best seen: waiting for an exact match can spin forever
+    // on a hand-held frame that never repeats a number precisely.
+    if (elapsed >= AUTO_WINDOW_MS && score >= auto.best * 0.98) {
+      auto = {armed: false, since: 0, best: 0, latched: true};
+      capture('auto');
+    }
   }
 
   // --- capture -------------------------------------------------------------
 
-  function capture() {
+  function capture(kind) {
     const frame = frameSource();
     if (!frame.width || !frame.height || !latest) return;
 
@@ -199,7 +282,8 @@
     // rejected captures too: a rule that never fires on real captures is not
     // discriminative, and that verdict needs the failures to be visible.
     const id = session.add(latest.vector, {blocked: latest.result.blocked,
-                                           instruction: latest.result.instruction.code});
+                                           instruction: latest.result.instruction.code,
+                                           kind: kind || 'manual'});
 
     // A blob URL, never the data URL. WebKit ignores the download attribute on
     // data: URLs, which is why the image never saved on the phone while the
@@ -363,12 +447,20 @@
   }
 
   el('startV2').addEventListener('click', start);
-  el('shutterV2').addEventListener('click', capture);
+  // The manual shutter stays: auto-capture chooses when the enforce set already
+  // holds, and the teacher must still be able to commit a frame regardless.
+  el('shutterV2').addEventListener('click', () => capture('manual'));
+  el('autoV2').addEventListener('change', event => {
+    autoEnabled = event.target.checked;
+    auto = {armed: false, since: 0, best: 0, latched: false};
+  });
   el('downloadCaptureV2').addEventListener('click', saveImage);
   el('exportSessionV2').addEventListener('click', exportSession);
 
-  window.SmartCaptureV2 = {REQ, DEBUG, IOS, capture, saveImage, exportSession,
+  window.SmartCaptureV2 = {REQ, DEBUG, IOS, AUTO_WINDOW_MS, capture, saveImage,
+                           exportSession, considerAutoCapture,
                            get session() { return session; },
                            get latest() { return latest; },
-                           get saved() { return saved; }};
+                           get saved() { return saved; },
+                           get auto() { return auto; }};
 })();
