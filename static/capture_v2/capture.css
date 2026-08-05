@@ -105,6 +105,21 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .result-card img { width: 96px; border-radius: 8px; }
 .result-card h2 { font-size: 0.95rem; margin: 0 0 8px; }
 
+.result-card a {
+  display: inline-block;
+  padding: 10px 14px;
+  border: 1px solid #24485a;
+  border-radius: 10px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+/* A save must never look the same whether it worked or not. */
+.save-status { margin: 8px 0 0; font-size: 0.85rem; min-height: 1.2em; }
+.save-status[data-kind="ok"] { color: var(--accent); }
+.save-status[data-kind="error"] { color: var(--warn); }
+.save-status[data-kind="info"] { opacity: 0.8; }
+
 #dbgPanelV2 {
   margin-top: 12px;
   padding: 10px;

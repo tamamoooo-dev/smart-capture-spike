@@ -76,12 +76,49 @@ produced repeatedly. Nothing else is entitled to that presumption: the default
 is to reuse the measurement code v1 already validated and delete the rule logic
 wrapped around it.
 
-## Status: frozen
+## Status: VS-1 executed, one contradiction measured
 
-**This revision is frozen as of 2026-08-05.** No further redesign until VS-1 has
-been executed and its measurements exist. Changes until then are limited to
-building the capture path that runs VS-1, and to fixing demonstrated blockers or
-measured contradictions found while building it.
+VS-1 ran on 2026-08-05: 39 captures, iPhone, 3024×4032 delivered, frozen
+cycle-1 form, 15 minutes.
+
+### Result: orientation is not a free variable within a frame
+
+| Group | n | max pageLongAxis | reached 3000 |
+|---|---|---|---|
+| axes aligned | 20 | 3352 | 19/20 |
+| axes unaligned | 19 | **2957** | **0/19** |
+
+The engine reported a ceiling of 3887 px for every capture and issued
+`MOVE_CLOSER` accordingly. But 3887 assumes the sheet's long side can lie along
+the frame's long side. It cannot, in any single frame, unless the teacher
+rotates: an unaligned sheet is bounded by the frame's *short* axis, 3024 px, and
+the best unaligned capture in the session reached 2957. v1 measured 2898 against
+a predicted 2915 under the same constraint — three independent measurements of
+the same ceiling, which v2 then computed as 3887 by assuming it away.
+
+So captures 0001–0020 were guided toward a target that did not exist in the
+teacher's current hold. They oscillated between `MOVE_CLOSER` and
+`SHOW_ALL_CORNERS` — 9 alternations across 20 captures, 19 of them unaligned —
+for 14 of the session's 15 minutes. At 0021 the phone was rotated and `READY`
+followed within seconds.
+
+**This is the failure class v2 was built to make impossible.** The feasible set
+was computed correctly for the wrong configuration space: orientation was
+treated as free across the whole session, when within a frame it is fixed by how
+the teacher is holding the phone. The remedy the engine never had was the one
+action that would have worked — rotate — because principle 1 forbade requiring
+orientation, and that was read as never mentioning it.
+
+Principle 1 is not wrong: rotation is free *downstream*, ArUco is rotation
+invariant, and the teacher must not be forced into a grip. What VS-1 falsifies
+is the inference drawn from it — that orientation therefore never needs to enter
+the feasible-set calculation.
+
+### What VS-1 could not decide
+
+Grading outcomes were not part of this session, so no rule was tested for
+discriminativeness. `exposure`, `sharpness` and the 3000 px requirement remain
+undecided until the 39 images are graded through `bench/`.
 
 ## Rule status register
 
@@ -92,10 +129,10 @@ Rules carry an explicit status, and only `enforce` rules can block a capture.
 | corner visibility | **enforce** | — | Hard requirement; violation makes registration impossible |
 | page detected | **enforce** | — | Nothing can be measured without it |
 | stability | **enforce** | — | Motion blur is unrecoverable by any observation |
-| axes aligned | **observe** | VS-1 | Free variable — recorded to confirm it never needs enforcing |
-| page long axis ≥ N px | **observe** | VS-1 | N is unvalidated. The sweep showed 2400 px analysis width already cleared the 40% detection gate, so 3000 was likely conservative. |
-| regional exposure | **observe** | VS-1 | Strongest predictor measured (AUC 0.940), but no threshold has been validated against grading outcomes |
-| sharpness | **observe** | VS-1 | Uncalibrated; preview sharpness may not predict capture sharpness |
+| axes aligned | **observe — basis falsified, decision required** | VS-1 ran | Recorded to confirm it never needs enforcing. VS-1 showed the opposite: 0/19 unaligned captures reached the target, 19/20 aligned ones did. It cannot stay `observe` and cannot be deleted. |
+| page long axis ≥ N px | **observe** | grading | VS-1 proved 3000 px *satisfiable* — 19/39 reached it, max 3352 against a 3887 ceiling. v1 never showed this. Discriminativeness still unmeasured. |
+| regional exposure | **observe** | grading | Strongest predictor measured (AUC 0.940). VS-1 range 0.786–0.955, no capture below v1's old 0.74 floor, so the session cannot separate good from bad on it. |
+| sharpness | **observe** | grading | Uncalibrated. VS-1 range 3499–11168 with no outcome to correlate against. |
 
 Promotions require a recorded measurement, cited in this table.
 

@@ -50,12 +50,17 @@
   const captureCanvas = el('captureCanvasV2');
   const captureContext = captureCanvas.getContext('2d');
 
+  // iPadOS reports itself as MacIntel, so touch points are what distinguish it.
+  const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
+              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
   const stability = O.tracker();
   let session = null;
   let stream = null;
   let running = false;
   let lastAnalysis = 0;
   let latest = null;
+  let saved = null;   // {id, blob, objectUrl, file} for the last capture
 
   function device() {
     const track = stream && stream.getVideoTracks()[0];
@@ -196,13 +201,111 @@
     const id = session.add(latest.vector, {blocked: latest.result.blocked,
                                            instruction: latest.result.instruction.code});
 
-    el('capturedPreviewV2').src = url;
+    // A blob URL, never the data URL. WebKit ignores the download attribute on
+    // data: URLs, which is why the image never saved on the phone while the
+    // session export -- a blob URL on the same device -- did.
+    //
+    // Built here rather than in the click handler: navigator.share must be
+    // reached synchronously from the user gesture, so nothing expensive may sit
+    // between the tap and the call.
+    const blob = dataUrlToBlob(url);
+    if (saved) URL.revokeObjectURL(saved.objectUrl);
+    let file = null;
+    try {
+      file = new File([blob], `${id}.jpg`, {type: blob.type, lastModified: Date.now()});
+    } catch (error) {
+      file = null;  // no File constructor: the share path is simply unavailable
+    }
+    saved = {id, blob, objectUrl: URL.createObjectURL(blob), file};
+
+    el('capturedPreviewV2').src = saved.objectUrl;
     const link = el('downloadCaptureV2');
-    link.href = url;
+    link.href = saved.objectUrl;
     link.download = `${id}.jpg`;
     el('captureIdV2').textContent = id;
     el('resultCardV2').hidden = false;
     el('countV2').textContent = String(session.count);
+    status(`${id} · ${(blob.size / 1048576).toFixed(1)}MB — جاهزة للحفظ`);
+  }
+
+  function dataUrlToBlob(dataUrl) {
+    const [header, encoded] = dataUrl.split(',');
+    const mime = (header.match(/^data:([^;]+)/) || [])[1] || 'image/jpeg';
+    const binary = atob(encoded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], {type: mime});
+  }
+
+  /** Every save path ends here. Nothing may fail silently. */
+  function status(text, kind) {
+    const node = el('saveStatusV2');
+    node.textContent = text;
+    node.dataset.kind = kind || 'info';
+  }
+
+  /**
+   * Save the captured image.
+   *
+   * Two flows, because the platforms genuinely differ:
+   *
+   *   iOS  -- the share sheet is the only route to Photos. A blob download does
+   *           work there (the session export proves it), but it lands in Files
+   *           rather than the camera roll, so it is the fallback, not the lead.
+   *   else -- an anchor download is the natural desktop flow, and the share
+   *           sheet on desktop has no obvious "save to disk" at all.
+   *
+   * Whichever runs, the outcome is reported. The previous version reported
+   * nothing on any path, so a silent no-op and a successful save looked alike.
+   */
+  async function saveImage(event) {
+    event.preventDefault();
+    if (!saved) return status('لا توجد صورة ملتقطة بعد', 'error');
+
+    const canShare = !!(saved.file && navigator.canShare &&
+                        navigator.canShare({files: [saved.file]}));
+
+    if (IOS && canShare) {
+      try {
+        await navigator.share({files: [saved.file], title: saved.id});
+        return status(`تم حفظ ${saved.id}`, 'ok');
+      } catch (error) {
+        if (error && error.name === 'AbortError') return status('أُلغي الحفظ', 'info');
+        status('تعذّرت المشاركة، جارٍ التنزيل…', 'error');
+      }
+    }
+
+    if (downloadImage()) return;
+
+    if (canShare) {
+      try {
+        await navigator.share({files: [saved.file], title: saved.id});
+        return status(`تم حفظ ${saved.id}`, 'ok');
+      } catch (error) {
+        if (error && error.name === 'AbortError') return status('أُلغي الحفظ', 'info');
+      }
+    }
+
+    // Last resort: show it, so it can be saved by long-press.
+    const tab = window.open(saved.objectUrl, '_blank');
+    if (tab) {
+      tab.opener = null;
+      status('فُتحت الصورة في تبويب — اضغط عليها مطولاً ثم «حفظ الصورة»', 'info');
+    } else {
+      status('تعذّر الحفظ. اسمح بالنوافذ المنبثقة وأعد المحاولة.', 'error');
+    }
+  }
+
+  function downloadImage() {
+    const anchor = document.createElement('a');
+    if (!('download' in anchor)) return false;
+    anchor.href = saved.objectUrl;
+    anchor.download = `${saved.id}.jpg`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    status(`تم تنزيل ${saved.id}.jpg`, 'ok');
+    return true;
   }
 
   function exportSession() {
@@ -261,9 +364,11 @@
 
   el('startV2').addEventListener('click', start);
   el('shutterV2').addEventListener('click', capture);
+  el('downloadCaptureV2').addEventListener('click', saveImage);
   el('exportSessionV2').addEventListener('click', exportSession);
 
-  window.SmartCaptureV2 = {REQ, DEBUG, capture, exportSession,
+  window.SmartCaptureV2 = {REQ, DEBUG, IOS, capture, saveImage, exportSession,
                            get session() { return session; },
-                           get latest() { return latest; }};
+                           get latest() { return latest; },
+                           get saved() { return saved; }};
 })();
