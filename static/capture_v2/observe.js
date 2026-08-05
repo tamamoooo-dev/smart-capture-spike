@@ -66,6 +66,93 @@
     return best;
   }
 
+  /**
+   * Convex hull of the paper mask's boundary, by monotone chain.
+   *
+   * The bounding box was never the paper: a sheet held at any angle has an
+   * axis-aligned box strictly larger than itself, which is why margins read as
+   * healthy while a corner was already out of frame.
+   */
+  function hull(mask, width, height, box) {
+    const points = [];
+    // Boundary only: interior pixels cannot be hull vertices, and skipping them
+    // keeps this linear in the sheet's perimeter rather than its area.
+    for (let y = box.y; y < box.y + box.height; y++) {
+      let first = -1, last = -1;
+      for (let x = box.x; x < box.x + box.width; x++) {
+        if (mask[y * width + x]) { if (first < 0) first = x; last = x; }
+      }
+      if (first >= 0) { points.push([first, y]); if (last !== first) points.push([last, y]); }
+    }
+    if (points.length < 3) return points;
+    points.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
+    const cross = (o, a, b) =>
+      (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lower = [], upper = [];
+    for (const p of points) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+      lower.push(p);
+    }
+    for (let i = points.length - 1; i >= 0; i--) {
+      const p = points[i];
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+      upper.push(p);
+    }
+    lower.pop(); upper.pop();
+    return lower.concat(upper);
+  }
+
+  /**
+   * The sheet's four corners, as the maximum-area quadrilateral on the hull.
+   *
+   * Rotation-agnostic by construction: no assumption that a corner is the
+   * topmost or leftmost point, which breaks as soon as the sheet is tilted.
+   * Returned in TL,TR,BR,BL order so a homography can be solved directly.
+   */
+  function corners(points) {
+    if (points.length < 4) return null;
+    // Coarse-to-fine: the hull can hold hundreds of points and the exhaustive
+    // search is O(n^4). Seeding from extremes and refining each corner in turn
+    // converges in a few passes and costs O(n) per pass.
+    const sum = p => p[0] + p[1], diff = p => p[0] - p[1];
+    let idx = [0, 0, 0, 0];
+    let best = [Infinity, -Infinity, -Infinity, Infinity];
+    points.forEach((p, i) => {
+      if (sum(p) < best[0]) { best[0] = sum(p); idx[0] = i; }
+      if (diff(p) > best[1]) { best[1] = diff(p); idx[1] = i; }
+      if (sum(p) > best[2]) { best[2] = sum(p); idx[2] = i; }
+      if (diff(p) < best[3]) { best[3] = diff(p); idx[3] = i; }
+    });
+    const area = ids => {
+      let a = 0;
+      for (let k = 0; k < 4; k++) {
+        const p = points[ids[k]], q = points[ids[(k + 1) % 4]];
+        a += p[0] * q[1] - q[0] * p[1];
+      }
+      return Math.abs(a) / 2;
+    };
+    for (let pass = 0; pass < 4; pass++) {
+      let improved = false;
+      for (let k = 0; k < 4; k++) {
+        let bestArea = area(idx), bestI = idx[k];
+        for (let i = 0; i < points.length; i++) {
+          const trial = idx.slice(); trial[k] = i;
+          const a = area(trial);
+          if (a > bestArea) { bestArea = a; bestI = i; improved = true; }
+        }
+        idx[k] = bestI;
+      }
+      if (!improved) break;
+    }
+    const quad = idx.map(i => points[i]);
+    // Order TL,TR,BR,BL by angle about the centroid, so the labelling holds
+    // however the sheet is rotated.
+    const cx = quad.reduce((s, p) => s + p[0], 0) / 4;
+    const cy = quad.reduce((s, p) => s + p[1], 0) / 4;
+    quad.sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+    return quad;
+  }
+
   /** Width of the paper mask across one row or column, for perspective. */
   function scanSpan(mask, width, height, axis, position, radius) {
     let min = Infinity, max = -Infinity, found = 0;
@@ -176,8 +263,16 @@
       if (value > maxRegion) maxRegion = value;
     }
 
+    const quad = corners(hull(mask, width, height, {
+      x: component.minX, y: component.minY, width: boxWidth, height: boxHeight
+    }));
+
     return {
       pageLongPx, pageShortPx,
+      // The paper's actual four corners in analysis space, for rectification.
+      // Null only when the mask is too small to have a hull, in which case
+      // nothing downstream can crop and the frame is unusable anyway.
+      quad,
       aspect: Math.max(boxWidth, boxHeight) / Math.max(1, Math.min(boxWidth, boxHeight)),
       axesAligned,
       marginsPx,
@@ -236,5 +331,6 @@
     };
   }
 
-  return {PARAMS, observe, tracker, percentile, largestComponent, scanSpan};
+  return {PARAMS, observe, tracker, percentile, largestComponent, scanSpan,
+          hull, corners};
 }));
