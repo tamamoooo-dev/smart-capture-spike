@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#07151c">
   <title>التقاط ذكي — تجربة هندسية</title>
-  <link rel="stylesheet" href="static/smart_capture_spike.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='smart_capture_spike.css') }}">
 </head>
 <body>
   <main class="shell">
@@ -58,7 +58,7 @@
           <button id="retake" type="button" hidden>إعادة المحاولة</button>
           <label class="file-button">اختبار بصورة موجودة<input id="testFile" type="file" accept="image/*" hidden></label>
         </div>
-        <p class="privacy">تُعالج الإطارات داخل المتصفح ولا تُرفع إلى أي خادم.</p>
+        <p class="privacy">تُعالج الإطارات داخل المتصفح ولا تُرفع إلى الخادم في هذا النموذج.</p>
       </aside>
     </section>
 
@@ -75,6 +75,6 @@
 
   <canvas id="analysisCanvas" width="360" height="270" hidden></canvas>
   <canvas id="captureCanvas" hidden></canvas>
-  <script src="static/smart_capture_spike.js"></script>
+  <script src="{{ url_for('static', filename='smart_capture_spike.js') }}"></script>
 </body>
 </html>

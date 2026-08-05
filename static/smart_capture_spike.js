@@ -14,6 +14,14 @@
   // portrait capture of an A4-landscape register can never satisfy the floor.
   const MIN_PAGE_WIDTH_PX = 3000;
   const MAX_CAPTURE_WIDTH = 4608;
+  // Full visibility of all four corners is a HARD requirement and is never
+  // traded for resolution. This is the largest share of the frame's long side
+  // the page may occupy while still leaving margin for the corners, and it
+  // bounds what "move closer" can ever achieve. Measured on the target device
+  // (iPhone 17 Pro, 4032x3024 granted): landscape reaches 3629px of page and
+  // clears the floor; portrait reaches 2722px and cannot, so in portrait the
+  // correct instruction is to rotate, never to move closer.
+  const MAX_SAFE_PAGE_FILL = 0.90;
   // Deterministic conditions are enforced BEFORE the shutter. A device whose
   // camera cannot deliver at least this many pixels can never satisfy
   // MIN_PAGE_WIDTH_PX, because the page cannot be wider than the frame.
@@ -153,6 +161,9 @@
     // change when the phone is rotated, so the previous test (frame aspect) was
     // permanently true. What matters is that the A4-landscape register lies
     // horizontally in the image -- however the teacher achieves that.
+    // Ceiling on what "move closer" can achieve without losing a corner.
+    const achievablePageWidthPx = Math.round(
+      Math.max(width, height) * sourceScale * MAX_SAFE_PAGE_FILL);
     const pageAspect = boxWidth / Math.max(1, boxHeight);
     const landscape = pageAspect >= 1.0;
     const maskFill = component.count / (boxWidth * boxHeight);
@@ -225,12 +236,15 @@
       sharpness: sharpness >= THRESHOLDS.minSharpness,
       lighting: meanLuma >= THRESHOLDS.minPageLuma && meanLuma <= THRESHOLDS.maxPageLuma && darkFraction <= THRESHOLDS.maxDarkFraction && brightFraction <= THRESHOLDS.maxBrightFraction,
       uniformLighting: uniformity >= THRESHOLDS.minRegionLumaRatio,
-      pageSize: pageWidthPx >= MIN_PAGE_WIDTH_PX && coverage <= THRESHOLDS.maxPageCoverage
+      // Resolution ONLY. Corner visibility is pageVisible's job; testing
+      // coverage here too made one check enforce two competing requirements,
+      // so satisfying resolution could push the teacher into losing a corner.
+      pageSize: pageWidthPx >= MIN_PAGE_WIDTH_PX
     };
     const ready = Object.values(checks).every(Boolean);
     return {
       ready, checks,
-      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, landscape, pageAspect},
+      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, achievablePageWidthPx, landscape, pageAspect},
       box: {x: component.minX, y: component.minY, width: boxWidth, height: boxHeight},
       worstRegionBox: uniformity >= THRESHOLDS.minRegionLumaRatio ? null : worstRegionBox,
       reason: firstFailure(checks, {coverage})
@@ -238,7 +252,7 @@
   }
 
   function emptyResult(reason) {
-    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,landscape:false,pageAspect:0}, box:null, worstRegionBox:null, reason};
+    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,achievablePageWidthPx:0,landscape:false,pageAspect:0}, box:null, worstRegionBox:null, reason};
   }
 
   function firstFailure(checks, metrics) {
@@ -251,10 +265,16 @@
     if (!checks.uniformLighting) return 'يوجد ظل على جزء من الورقة؛ حرّك يدك أو الهاتف بعيداً عن مصدر الضوء';
     if (!checks.lighting) return 'حسّن الإضاءة وتجنب الوهج أو الظلام';
     if (!checks.pageSize) {
-      // Directional: the old message said "move closer" even when too close.
-      return metrics && metrics.coverage > THRESHOLDS.maxPageCoverage
-        ? 'ابتعد قليلاً حتى تظهر حواف الصفحة كاملة'
-        : `قرّب الهاتف؛ عرض الصفحة ${metrics ? metrics.pageWidthPx : 0} بكسل والمطلوب ${MIN_PAGE_WIDTH_PX}`;
+      // "Move closer" is only a legitimate instruction while there is headroom
+      // left before the corners would be lost. Past that it asks the teacher to
+      // violate the hard requirement, so the shortfall is a device/orientation
+      // limit and must be reported as one instead of nagging.
+      if (metrics && metrics.pageWidthPx >= metrics.achievablePageWidthPx) {
+        return metrics.landscape
+          ? `تعذّر بلوغ الدقة المطلوبة مع إبقاء الزوايا الأربع ظاهرة (${metrics.pageWidthPx} من ${MIN_PAGE_WIDTH_PX} بكسل)`
+          : 'أدر الهاتف أفقياً؛ الوضع الرأسي لا يبلغ الدقة المطلوبة مع إبقاء الزوايا ظاهرة';
+      }
+      return `قرّب الهاتف؛ عرض الصفحة ${metrics ? metrics.pageWidthPx : 0} بكسل والمطلوب ${MIN_PAGE_WIDTH_PX}`;
     }
     return 'الإطار صالح؛ اثبت للحظة';
   }
@@ -500,7 +520,7 @@
   // teacher. It belongs to the commit stage, on the full-resolution frame.
   window.SmartCaptureSpike = Object.freeze({
     THRESHOLDS, analyzeImageData, emptyResult, firstFailure, deviceLandscape,
-    MIN_PAGE_WIDTH_PX, MIN_STREAM_WIDTH, MAX_CAPTURE_WIDTH,
+    MIN_PAGE_WIDTH_PX, MIN_STREAM_WIDTH, MAX_CAPTURE_WIDTH, MAX_SAFE_PAGE_FILL,
     registrationStage: 'commit'
   });
 })();
