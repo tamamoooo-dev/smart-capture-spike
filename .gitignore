@@ -1,0 +1,18 @@
+# This repo is the GitHub Pages deployment for the Smart Capture spike only.
+# The grading pipeline, its tests and any student data stay in the local
+# project and must never be pushed here.
+/bench/
+/hybrid_register/
+/tests/
+/templates/
+/tools/build_pilot_protocol.py
+/app.py
+/static/app.*
+/output/
+/outputs/
+/tmp/
+/docs/ADR/
+/docs/protocols/
+*.pyc
+__pycache__/
+.venv/
