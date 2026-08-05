@@ -76,6 +76,25 @@ produced repeatedly. Nothing else is entitled to that presumption: the default
 is to reuse the measurement code v1 already validated and delete the rule logic
 wrapped around it.
 
+## Status: FROZEN as baseline, 2026-08-05
+
+Smart Capture is no longer the research focus. The current implementation
+(`748e82d`) is the baseline and the input source for extraction work.
+
+Capture-side metrics are not the objective and are not to be optimised in
+isolation. Marker count is not the objective either — it is an input to grading,
+and the only thing that counts is end-to-end grading accuracy. **Any further
+capture change must be justified by a measured improvement in grading results.
+A capture change that does not improve grading is not pursued.**
+
+The four observe rules stay recorded and blocking nothing. They are not being
+decided, because deciding them would be capture optimisation; if grading work
+never needs them, they are deleted rather than promoted.
+
+What the baseline delivers, measured: 965 of 1200 markers on an auto-captured
+12 MP frame, no near/far gradient, residuals p50 0.238 / p95 1.449 / max
+2.509 mm.
+
 ## Status: VS-1 executed, one contradiction measured
 
 VS-1 ran on 2026-08-05: 39 captures, iPhone, 3024×4032 delivered, frozen
