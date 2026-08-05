@@ -83,6 +83,50 @@
     document.body.classList.toggle('device-landscape', deviceLandscape());
   }
 
+  // Diagnostic mode (?diag=1). Measures the ACTUAL geometric ceiling on this
+  // device instead of assuming it. peakWithCorners is the number that matters:
+  // the widest page ever achieved while all four corners were still visible.
+  const DIAG = /[?&]diag=1/.test(location.search);
+  const diag = {peakWithCorners: 0, peakAny: 0, peakFrame: 0, samples: 0, at: null};
+
+  function resetPeaks() {
+    diag.peakWithCorners = 0; diag.peakAny = 0; diag.peakFrame = 0;
+    diag.samples = 0; diag.at = null;
+  }
+
+  function updateDiagnostics(result) {
+    if (!DIAG) return;
+    const panel = el('diagPanel');
+    if (!panel) return;
+    const m = result.metrics;
+    const cornersOk = result.checks.pageVisible;
+    diag.samples++;
+    diag.peakAny = Math.max(diag.peakAny, m.pageWidthPx);
+    diag.peakFrame = Math.max(diag.peakFrame, m.frameWidthPx);
+    if (cornersOk && m.pageWidthPx > diag.peakWithCorners) {
+      diag.peakWithCorners = m.pageWidthPx;
+      diag.at = {coverage: m.coverage, left: m.marginLeftPx, right: m.marginRightPx,
+                 top: m.marginTopPx, bottom: m.marginBottomPx};
+    }
+    const pct = v => `${(v * 100).toFixed(1)}%`;
+    const rows = [
+      ['source frame', `${m.frameWidthPx} × ${m.frameHeightPx}`],
+      ['detected page', `${m.pageWidthPx} × ${m.pageHeightPx}`],
+      ['page width / required', `${m.pageWidthPx} / ${MIN_PAGE_WIDTH_PX}`,
+       m.pageWidthPx >= MIN_PAGE_WIDTH_PX ? 'ok' : 'bad'],
+      ['page / frame width', pct(m.frameWidthPx ? m.pageWidthPx / m.frameWidthPx : 0)],
+      ['coverage (area)', pct(m.coverage)],
+      ['margins L/R/T/B px', `${m.marginLeftPx}/${m.marginRightPx}/${m.marginTopPx}/${m.marginBottomPx}`],
+      ['four corners visible', cornersOk ? 'YES' : 'NO', cornersOk ? 'ok' : 'bad'],
+      ['page aspect', m.pageAspect.toFixed(3)],
+      ['— PEAK with corners', diag.peakWithCorners, 'peak'],
+      ['— PEAK any', diag.peakAny],
+      ['— peak frame width', diag.peakFrame]
+    ];
+    panel.innerHTML = '<table>' + rows.map(([k, v, cls]) =>
+      `<tr><td>${k}</td><td class="${cls || ''}">${v}</td></tr>`).join('') + '</table>';
+  }
+
   function percentile(values, ratio) {
     const copy = Array.from(values).sort((a, b) => a - b);
     return copy[Math.min(copy.length - 1, Math.max(0, Math.floor(copy.length * ratio)))] || 0;
@@ -174,6 +218,13 @@
     const roomToApproach = Math.min(
       component.minX, width - 1 - component.maxX,
       component.minY, height - 1 - component.maxY) > THRESHOLDS.pageMarginRatio * width * 1.5;
+    const marginLeftPx = Math.round(component.minX * sourceScale);
+    const marginRightPx = Math.round((width - 1 - component.maxX) * sourceScale);
+    const marginTopPx = Math.round(component.minY * sourceScale);
+    const marginBottomPx = Math.round((height - 1 - component.maxY) * sourceScale);
+    const frameWidthPx = Math.round(width * sourceScale);
+    const frameHeightPx = Math.round(height * sourceScale);
+    const pageHeightPx = Math.round(boxHeight * sourceScale);
     const pageAspect = boxWidth / Math.max(1, boxHeight);
     const landscape = pageAspect >= 1.0;
     const maskFill = component.count / (boxWidth * boxHeight);
@@ -254,7 +305,7 @@
     const ready = Object.values(checks).every(Boolean);
     return {
       ready, checks,
-      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, achievablePageWidthPx, deviceCanReachFloor, roomToApproach, frameLandscape, landscape, pageAspect},
+      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, pageHeightPx, achievablePageWidthPx, deviceCanReachFloor, roomToApproach, frameLandscape, landscape, pageAspect, frameWidthPx, frameHeightPx, marginLeftPx, marginRightPx, marginTopPx, marginBottomPx},
       box: {x: component.minX, y: component.minY, width: boxWidth, height: boxHeight},
       worstRegionBox: uniformity >= THRESHOLDS.minRegionLumaRatio ? null : worstRegionBox,
       reason: firstFailure(checks, {coverage})
@@ -262,7 +313,7 @@
   }
 
   function emptyResult(reason) {
-    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,achievablePageWidthPx:0,deviceCanReachFloor:false,roomToApproach:false,frameLandscape:true,landscape:false,pageAspect:0}, box:null, worstRegionBox:null, reason};
+    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,pageHeightPx:0,achievablePageWidthPx:0,deviceCanReachFloor:false,roomToApproach:false,frameLandscape:true,landscape:false,pageAspect:0,frameWidthPx:0,frameHeightPx:0,marginLeftPx:0,marginRightPx:0,marginTopPx:0,marginBottomPx:0}, box:null, worstRegionBox:null, reason};
   }
 
   function firstFailure(checks, metrics) {
@@ -408,6 +459,7 @@
     const started = performance.now();
     const result = analyzeImageData(analysisContext.getImageData(0, 0, width, height), frame.width);
     updateUI(result);
+    updateDiagnostics(result);
     // Live detector readout: page box, aspect and page width in source pixels.
     // Without this the orientation indicator is unfalsifiable from the UI --
     // there is no way to tell a real measurement from a fallback value.
@@ -518,6 +570,25 @@
   window.addEventListener('resize', applyDeviceOrientation);
   applyDeviceOrientation();
 
+  if (DIAG) {
+    document.body.classList.add('diag');
+    const reset = el('diagReset'), copy = el('diagCopy');
+    if (reset) reset.addEventListener('click', () => { resetPeaks(); el('instruction').textContent = 'أُعيد ضبط القياس'; });
+    if (copy) copy.addEventListener('click', async () => {
+      const m = currentResult ? currentResult.metrics : {};
+      const text = JSON.stringify({
+        ua: navigator.userAgent,
+        frame: [m.frameWidthPx, m.frameHeightPx],
+        peakPageWidthWithCorners: diag.peakWithCorners,
+        peakPageWidthAny: diag.peakAny,
+        peakFrameWidth: diag.peakFrame,
+        atPeak: diag.at, required: MIN_PAGE_WIDTH_PX, samples: diag.samples
+      }, null, 2);
+      try { await navigator.clipboard.writeText(text); el('instruction').textContent = 'نُسخ القياس'; }
+      catch { el('instruction').textContent = text; }
+    });
+  }
+
   el('startCamera').addEventListener('click', startCamera);
   el('manualCapture').addEventListener('click', () => captureFrame('manual'));
   el('retake').addEventListener('click', () => {
@@ -537,6 +608,6 @@
   window.SmartCaptureSpike = Object.freeze({
     THRESHOLDS, analyzeImageData, emptyResult, firstFailure, deviceLandscape,
     MIN_PAGE_WIDTH_PX, MIN_STREAM_WIDTH, MAX_CAPTURE_WIDTH, MAX_SAFE_PAGE_FILL,
-    registrationStage: 'commit'
+    registrationStage: 'commit', DIAG, diag, resetPeaks
   });
 })();
