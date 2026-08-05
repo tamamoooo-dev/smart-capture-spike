@@ -29,6 +29,30 @@
   const STATUS = {ENFORCE: 'enforce', OBSERVE: 'observe'};
 
   /**
+   * The rule register, mirroring docs/smart-capture-v2.md.
+   *
+   * `observe` is a queue, not a resting place: every observe rule names the
+   * validation session that must promote or delete it. Declaring one without a
+   * session throws, so a threshold cannot quietly acquire permanent residency
+   * without anyone having to justify it.
+   */
+  const RULES = {
+    pageDetected:     {status: STATUS.ENFORCE},
+    cornerVisibility: {status: STATUS.ENFORCE},
+    stability:        {status: STATUS.ENFORCE},
+    pageLongAxis:     {status: STATUS.OBSERVE, session: 'VS-1'},
+    axesAligned:      {status: STATUS.OBSERVE, session: 'VS-1'},
+    exposure:         {status: STATUS.OBSERVE, session: 'VS-1'},
+    sharpness:        {status: STATUS.OBSERVE, session: 'VS-1'}
+  };
+
+  for (const id of Object.keys(RULES)) {
+    if (RULES[id].status === STATUS.OBSERVE && !RULES[id].session) {
+      throw new Error(`observe rule ${id} names no validation session`);
+    }
+  }
+
+  /**
    * Ceiling on the sheet's long axis, in source pixels, with margins intact.
    *
    * Orientation is a free variable: ArUco registration is rotation invariant
@@ -84,34 +108,38 @@
   function evaluate(frame, observation, req) {
     const feas = feasibility(frame, req);
     const rules = [];
-    const add = (id, status, satisfied, value, detail) =>
-      rules.push({id, status, satisfied, value, detail: detail || null});
+    const add = (id, satisfied, value, detail) => {
+      const spec = RULES[id];
+      if (!spec) throw new Error(`unregistered rule ${id}`);
+      rules.push({id, status: spec.status, session: spec.session || null,
+                  satisfied, value, detail: detail || null});
+    };
 
     if (!observation) {
-      add('pageDetected', STATUS.ENFORCE, false, null);
+      add('pageDetected', false, null);
       return {feasibility: feas, rules, blocked: true,
               instruction: {code: 'NO_PAGE', actionable: true}};
     }
 
-    add('pageDetected', STATUS.ENFORCE, true, true);
+    add('pageDetected', true, true);
 
     const cornersOk = observation.marginsPx &&
       Math.min(observation.marginsPx.left, observation.marginsPx.right,
                observation.marginsPx.top, observation.marginsPx.bottom) >=
       req.marginRatio * Math.min(frame.width, frame.height);
-    add('cornerVisibility', STATUS.ENFORCE, cornersOk, observation.marginsPx);
+    add('cornerVisibility', cornersOk, observation.marginsPx);
 
-    add('stability', STATUS.ENFORCE, !!observation.stable, !!observation.stable);
+    add('stability', !!observation.stable, !!observation.stable);
 
-    add('pageLongAxis', STATUS.OBSERVE,
+    add('pageLongAxis',
         observation.pageLongPx >= req.minPageLongPx,
         observation.pageLongPx,
         {required: req.minPageLongPx, ceiling: feas.maxPageLongPx,
          headroomPx: Math.max(0, feas.maxPageLongPx - observation.pageLongPx)});
 
-    add('axesAligned', STATUS.OBSERVE, !!observation.axesAligned, !!observation.axesAligned);
-    add('exposure', STATUS.OBSERVE, null, observation.minRegionExposure);
-    add('sharpness', STATUS.OBSERVE, null, observation.sharpness);
+    add('axesAligned', !!observation.axesAligned, !!observation.axesAligned);
+    add('exposure', null, observation.minRegionExposure);
+    add('sharpness', null, observation.sharpness);
 
     const blocking = rules.filter(r => r.status === STATUS.ENFORCE && r.satisfied === false);
     return {feasibility: feas, rules, blocked: blocking.length > 0,
@@ -157,6 +185,47 @@
     return {code: 'READY', actionable: false};
   }
 
-  return {A4_ASPECT, A4_LONG_MM, A4_SHORT_MM, STATUS,
-          ceiling, feasibility, evaluate, instruct, utilisation};
+  /**
+   * The metric vector for one evaluation.
+   *
+   * Always produced, debug flag or not. Acceptance rules are validated offline
+   * by correlating these against grading outcomes in bench/, so gating the
+   * record would gate the only mechanism that promotes or deletes a rule.
+   */
+  function record(frame, observation, result) {
+    const vector = {
+      frameLongPx: Math.max(frame.width, frame.height),
+      frameShortPx: Math.min(frame.width, frame.height),
+      ceilingPx: result.feasibility.maxPageLongPx,
+      feasible: result.feasibility.feasible,
+      utilisation: result.utilisation != null ? result.utilisation : 0,
+      blocked: result.blocked,
+      instruction: result.instruction.code
+    };
+    for (const rule of result.rules) vector[rule.id] = rule.value;
+    return vector;
+  }
+
+  /**
+   * What the screen shows.
+   *
+   * One instruction, always. Diagnostics only under an explicit debug flag --
+   * they carry their own ids so they can never be suppressed by the feature
+   * they exist to explain, but they are absent from the teacher's screen.
+   */
+  function report(result, opts) {
+    const debug = !!(opts && opts.debug);
+    return {
+      instruction: result.instruction,
+      blocked: result.blocked,
+      diagnostics: debug ? {
+        feasibility: result.feasibility,
+        rules: result.rules,
+        utilisation: result.utilisation != null ? result.utilisation : 0
+      } : null
+    };
+  }
+
+  return {A4_ASPECT, A4_LONG_MM, A4_SHORT_MM, STATUS, RULES,
+          ceiling, feasibility, evaluate, instruct, utilisation, record, report};
 }));

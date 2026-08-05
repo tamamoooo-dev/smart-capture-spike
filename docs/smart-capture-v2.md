@@ -59,24 +59,117 @@ not by argument.
 **4. Corner visibility is inviolable.** It is never traded for resolution. If
 the two conflict, the configuration is infeasible and is reported as such.
 
-**5. Diagnosability is independent of the feature being diagnosed.** Debug
-output uses its own ids, its own stylesheet scope, and is always present.
+**5. Diagnosability is independent of the feature being diagnosed, and off by
+default.** Debug output uses its own ids and its own stylesheet scope, so it can
+never be hidden by the thing it exists to explain — but it is emitted only under
+`?debug=1`. The teacher's screen carries one instruction and nothing else.
+
+Recording is not display. Every capture records its metric vector regardless of
+the flag; the flag governs what is rendered, not what is measured. Offline
+validation depends on the record, so gating the record would gate the only
+mechanism that retires a rule.
+
+**6. Simplicity is a requirement, not a preference.** New architecture is
+introduced only where it removes a *demonstrated* failure mode. The feasible-set
+solver earned its place by removing contradictory instructions, which v1
+produced repeatedly. Nothing else is entitled to that presumption: the default
+is to reuse the measurement code v1 already validated and delete the rule logic
+wrapped around it.
+
+## Status: frozen
+
+**This revision is frozen as of 2026-08-05.** No further redesign until VS-1 has
+been executed and its measurements exist. Changes until then are limited to
+building the capture path that runs VS-1, and to fixing demonstrated blockers or
+measured contradictions found while building it.
 
 ## Rule status register
 
 Rules carry an explicit status, and only `enforce` rules can block a capture.
 
-| Rule | Status | Basis |
-|---|---|---|
-| corner visibility | **enforce** | Hard requirement; violation makes registration impossible |
-| page detected | **enforce** | Nothing can be measured without it |
-| axes aligned | **observe** | Free variable — recorded to confirm it never needs enforcing |
-| page long axis ≥ N px | **observe** | N is unvalidated. The sweep showed 2400 px analysis width already cleared the 40% detection gate, so 3000 was likely conservative. |
-| regional exposure | **observe** | Strongest predictor measured (AUC 0.940), but no threshold has been validated against grading outcomes |
-| sharpness | **observe** | Uncalibrated; preview sharpness may not predict capture sharpness |
-| stability | **enforce** | Motion blur is unrecoverable by any observation |
+| Rule | Status | Verdict due | Basis |
+|---|---|---|---|
+| corner visibility | **enforce** | — | Hard requirement; violation makes registration impossible |
+| page detected | **enforce** | — | Nothing can be measured without it |
+| stability | **enforce** | — | Motion blur is unrecoverable by any observation |
+| axes aligned | **observe** | VS-1 | Free variable — recorded to confirm it never needs enforcing |
+| page long axis ≥ N px | **observe** | VS-1 | N is unvalidated. The sweep showed 2400 px analysis width already cleared the 40% detection gate, so 3000 was likely conservative. |
+| regional exposure | **observe** | VS-1 | Strongest predictor measured (AUC 0.940), but no threshold has been validated against grading outcomes |
+| sharpness | **observe** | VS-1 | Uncalibrated; preview sharpness may not predict capture sharpness |
 
 Promotions require a recorded measurement, cited in this table.
+
+## Rule lifecycle: promote or delete
+
+`observe` is a queue, not a resting place. A rule that sits there indefinitely is
+a threshold nobody has to justify and nobody can remove.
+
+Every `observe` rule names the validation session that must decide it. **VS-1**
+is one session on the target device against the existing frozen form. When it
+closes, each rule listed against it takes exactly one of two outcomes:
+
+- **promote** to `enforce`, with the measurement cited in the register — the
+  rule must be shown both *satisfiable* on real captures and *discriminative* of
+  grading success in `bench/`;
+- **delete** — code, metric, and row removed.
+
+There is no third outcome. "Needs more data" means delete; a rule that could not
+be decided by a session of real captures is not blocking anything worth blocking,
+and it can be reintroduced later with the measurement that motivates it. Adding
+an `observe` rule without naming its session is not permitted.
+
+### Known measurement limit, for VS-1 to account for
+
+Found while building the VS-1 path, not by argument: the paper threshold is
+adaptive (`p55 + 12`, clamped to 105–205), so a shadow darker than the threshold
+is **excluded from the page mask** rather than measured on it. A severe
+localised shadow therefore shrinks the detected page — it shows up as a geometry
+anomaly, not as low regional exposure.
+
+Consequence for the exposure rule: it is discriminative over mild and moderate
+shading, which is the range the AUC 0.940 result was measured on, and blind at
+the severe end where the page box distorts instead. VS-1 must read the two
+together, and a promotion of `regional exposure` on its own would be reading a
+metric outside the range where it holds. Not fixed here — the architecture is
+frozen, and the fix would be an unvalidated threshold change.
+
+## When Smart Capture is done
+
+Capture is a supporting subsystem, not the objective. So the stop condition is
+not a capture-quality threshold at all:
+
+> **Smart Capture stops when further capture improvements no longer produce a
+> measurable improvement in grading accuracy.**
+
+A retake-rate target was rejected as the stop condition, and the reason
+generalises: every capture-side metric — retake rate, page width, exposure,
+utilisation — can be improved to its limit by an assistant that never changes a
+single grade. Only the grading outcome can tell capture work when to stop.
+
+### What counts as evidence
+
+After VS-1, a Smart Capture change ships only with a paired `bench/` run —
+same corpus, same labels, pipeline before and after — moving at least one of:
+
+- **`false_accept_rate`** down. A wrong grade committed silently is the only
+  failure that damages trust, so this dominates.
+- **`correct_accepts / rows_scored`** up. Deliberately measured over *labelled
+  rows*, not over accepted rows: a change that rescues sheets which previously
+  failed to register earns credit here, while a change that buys accuracy by
+  grading fewer rows does not.
+
+Capture-side metrics may be *reported* in that run, but they never constitute
+the justification. "The page is bigger" is not a result.
+
+### What counts as measurable
+
+The delta must exceed what the corpus can resolve. Over N labelled rows the
+finest resolvable difference is one row in N, so a change moving fewer rows than
+that has not been measured — it has been hoped for. Enlarging the corpus is a
+legitimate way to resolve a smaller effect; asserting the effect is not.
+
+A change that measures flat is not neutral. It is evidence that capture is no
+longer the binding constraint, and work returns to the extraction model.
 
 ## What v2 deliberately does not do
 
@@ -85,3 +178,7 @@ Promotions require a recorded measurement, cited in this table.
 - No ArUco in the live loop. Registration is a commit-stage concern; detection
   is non-monotonic in resolution and cannot steer a teacher.
 - No threshold tuning without a recorded capture that motivates it.
+- No new capture feature whose justification is an argument rather than a
+  measurement, and after VS-1 no capture change at all without a paired
+  `bench/` run showing it moved grading accuracy.
+- No diagnostic surface on the default screen.

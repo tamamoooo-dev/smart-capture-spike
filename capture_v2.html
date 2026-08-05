@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#07151c">
+  <title>التقاط ذكي v2 — جلسة VS-1</title>
+  <link rel="stylesheet" href="static/capture_v2/capture.css?v=1">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <h1>جلسة التحقق VS-1</h1>
+      <p>التقاط يدوي فقط. تُسجَّل قياسات كل صورة للتحليل لاحقاً.</p>
+      <div class="counter">الصور المسجَّلة: <b id="countV2">0</b></div>
+    </header>
+
+    <section class="viewer">
+      <video id="cameraV2" playsinline muted autoplay></video>
+      <canvas id="outlineCanvasV2" aria-hidden="true"></canvas>
+      <!-- One instruction. Never a list, never a second line. -->
+      <div class="instruction" id="instructionV2" role="status" data-actionable="true">
+        شغّل الكاميرا ووجّهها إلى السجل
+      </div>
+    </section>
+
+    <div class="controls">
+      <button class="primary" id="startV2" type="button">تشغيل الكاميرا</button>
+      <button id="shutterV2" type="button" disabled>التقاط</button>
+      <a id="exportSessionV2" href="#" download>تصدير سجل الجلسة</a>
+    </div>
+    <p class="note" id="noteV2"></p>
+    <p class="privacy">تُعالج الإطارات داخل المتصفح ولا تُرفع إلى أي خادم.</p>
+
+    <section id="resultCardV2" class="result-card" hidden aria-live="polite">
+      <img id="capturedPreviewV2" alt="الصورة الملتقطة">
+      <div>
+        <h2>تم التسجيل: <span id="captureIdV2"></span></h2>
+        <a id="downloadCaptureV2" href="#" download>حفظ الصورة</a>
+      </div>
+    </section>
+
+    <!--
+      Diagnostics. Hidden unless ?debug=1, and scoped to its own id so it can
+      never be hidden by the feature it exists to explain: v1 blanked its whole
+      page because `.diag{display:none}` also matched the class on <body>.
+    -->
+    <section id="dbgPanelV2" hidden></section>
+  </main>
+
+  <canvas id="analysisCanvasV2" width="360" height="270" hidden></canvas>
+  <canvas id="captureCanvasV2" hidden></canvas>
+  <script src="static/capture_v2/feasibility.js?v=1"></script>
+  <script src="static/capture_v2/observe.js?v=1"></script>
+  <script src="static/capture_v2/session.js?v=1"></script>
+  <script src="static/capture_v2/capture.js?v=1"></script>
+</body>
+</html>
