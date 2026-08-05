@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Camera capability probe</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:#0b1418;color:#e8f1f2;font:14px/1.6 -apple-system,Tahoma,Arial,sans-serif}
+h1{font-size:19px;margin:0 0 4px}
+p.sub{color:#8ba3ab;margin:0 0 16px}
+button{appearance:none;border:0;border-radius:10px;padding:14px 18px;font:700 16px inherit;background:#35c6b4;color:#04201e;width:100%;margin-bottom:12px}
+button.ghost{background:#17323c;color:#e8f1f2}
+button:disabled{opacity:.45}
+#status{padding:10px 12px;border-radius:8px;background:#12262e;margin-bottom:12px;min-height:22px}
+table{width:100%;border-collapse:collapse;margin-bottom:14px;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #1e3views}
+th,td{border-bottom:1px solid #1e343d}
+th{color:#8ba3ab;font-weight:600}
+td.n{font-variant-numeric:tabular-nums;text-align:right}
+.ok{color:#65d38b}.bad{color:#ef746f}.warn{color:#ffcf5c}
+textarea{width:100%;height:220px;background:#071115;color:#9fe9dd;border:1px solid #1e343d;border-radius:10px;padding:10px;font:12px/1.5 ui-monospace,Menlo,monospace}
+</style>
+</head>
+<body>
+<h1>Camera capability probe</h1>
+<p class="sub">Measures what this device actually grants. Nothing is uploaded; results stay in the page until you copy them.</p>
+
+<button id="run">Run probe</button>
+<div id="status">Tap “Run probe”. Allow camera access when asked.</div>
+
+<div id="out"></div>
+
+<button id="copy" class="ghost" hidden>Copy results</button>
+<textarea id="json" hidden readonly></textarea>
+
+<script>
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+const report = {ua: navigator.userAgent, ts: new Date().toISOString()};
+
+// Requests escalate well past anything a phone will grant. The point is to find
+// where the browser stops honouring the request, not to guess it in advance.
+const LADDER = [1280, 1920, 2560, 3024, 3840, 4032, 4608, 6048, 8064];
+
+const say = t => { $('status').textContent = t; };
+
+function table(title, rows) {
+  const div = document.createElement('div');
+  div.innerHTML = `<table><thead><tr><th colspan="2">${title}</th></tr></thead><tbody>` +
+    rows.map(([k, v, cls]) => `<tr><td>${k}</td><td class="n ${cls || ''}">${v}</td></tr>`).join('') +
+    `</tbody></table>`;
+  $('out').appendChild(div);
+}
+
+async function open(constraints) {
+  const s = await navigator.mediaDevices.getUserMedia({video: constraints, audio: false});
+  const track = s.getVideoTracks()[0];
+  return {stream: s, track, settings: track.getSettings(),
+          caps: track.getCapabilities ? track.getCapabilities() : null};
+}
+const stop = s => s && s.getTracks().forEach(t => t.stop());
+
+async function probeLadder() {
+  const rows = [];
+  report.ladder = [];
+  for (const w of LADDER) {
+    let got = 'error', cls = 'bad';
+    try {
+      const o = await open({facingMode: {ideal: 'environment'},
+                            width: {ideal: w}, height: {ideal: Math.round(w * 3 / 4)}});
+      const g = Math.max(o.settings.width || 0, o.settings.height || 0);
+      got = `${o.settings.width}×${o.settings.height}`;
+      cls = g >= 3000 ? 'ok' : (g >= 2000 ? 'warn' : 'bad');
+      report.ladder.push({requested: w, granted: [o.settings.width, o.settings.height]});
+      stop(o.stream);
+    } catch (e) {
+      report.ladder.push({requested: w, error: String(e && e.name || e)});
+    }
+    rows.push([`request ${w}px`, got, cls]);
+    say(`Testing ${w}px…`);
+  }
+  table('Video track: requested vs granted', rows);
+}
+
+async function probeCapabilities() {
+  let o;
+  try {
+    o = await open({facingMode: {ideal: 'environment'},
+                    width: {ideal: 8064}, height: {ideal: 6048}});
+  } catch (e) { table('Track capabilities', [['error', String(e), 'bad']]); return; }
+
+  report.settings = o.settings;
+  report.capabilities = o.caps;
+  const c = o.caps || {};
+  const has = k => c[k] ? (Array.isArray(c[k]) ? c[k].join('/') : JSON.stringify(c[k])) : '—';
+  table('Track capabilities', [
+    ['width max', c.width ? c.width.max : '—', c.width && c.width.max >= 3000 ? 'ok' : 'warn'],
+    ['height max', c.height ? c.height.max : '—'],
+    ['focusMode', has('focusMode'), c.focusMode ? 'ok' : 'bad'],
+    ['exposureMode', has('exposureMode'), c.exposureMode ? 'ok' : 'bad'],
+    ['whiteBalanceMode', has('whiteBalanceMode'), c.whiteBalanceMode ? 'ok' : 'bad'],
+    ['zoom', has('zoom')],
+    ['torch', has('torch')],
+    ['getCapabilities present', o.caps ? 'yes' : 'no', o.caps ? 'ok' : 'bad']
+  ]);
+
+  // ImageCapture is the decisive one: takePhoto() resolution is independent of
+  // the video track, so a capped preview would not imply capped stills.
+  const rows = [];
+  if (typeof window.ImageCapture === 'undefined') {
+    rows.push(['ImageCapture API', 'NOT SUPPORTED', 'bad']);
+    report.imageCapture = {supported: false};
+  } else {
+    rows.push(['ImageCapture API', 'supported', 'ok']);
+    report.imageCapture = {supported: true};
+    try {
+      const ic = new window.ImageCapture(o.track);
+      try {
+        const pc = await ic.getPhotoCapabilities();
+        report.imageCapture.photoCapabilities = pc;
+        rows.push(['photo width max', pc.imageWidth ? pc.imageWidth.max : '—',
+                   pc.imageWidth && pc.imageWidth.max >= 3000 ? 'ok' : 'warn']);
+        rows.push(['photo height max', pc.imageHeight ? pc.imageHeight.max : '—']);
+      } catch (e) { rows.push(['getPhotoCapabilities', String(e.name || e), 'warn']); }
+      try {
+        const blob = await ic.takePhoto();
+        const bmp = await createImageBitmap(blob);
+        report.imageCapture.takePhoto = {width: bmp.width, height: bmp.height, bytes: blob.size};
+        rows.push(['takePhoto actual', `${bmp.width}×${bmp.height}`,
+                   Math.max(bmp.width, bmp.height) >= 3000 ? 'ok' : 'bad']);
+      } catch (e) { rows.push(['takePhoto', String(e.name || e), 'bad']); }
+    } catch (e) { rows.push(['ImageCapture ctor', String(e.name || e), 'bad']); }
+  }
+
+  // What a canvas grab yields, which is the path the current PWA actually uses.
+  const v = document.createElement('video');
+  v.srcObject = o.stream; v.playsInline = true; v.muted = true;
+  await v.play().catch(() => {});
+  await new Promise(r => setTimeout(r, 400));
+  const cw = v.videoWidth, ch = v.videoHeight;
+  report.canvasGrab = {width: cw, height: ch};
+  rows.push(['canvas grab (current PWA path)', `${cw}×${ch}`,
+             Math.max(cw, ch) >= 3000 ? 'ok' : 'bad']);
+
+  // Page width is what the grader needs: ~90% of the frame's long side.
+  const pageEst = Math.round(Math.max(cw, ch) * 0.90);
+  rows.push(['estimated page width @90% frame', `${pageEst}px`, pageEst >= 3000 ? 'ok' : 'bad']);
+  rows.push(['px per ArUco module', (pageEst / 297 * 2.945 / 8).toFixed(2),
+             (pageEst / 297 * 2.945 / 8) >= 2.9 ? 'ok' : 'bad']);
+  report.derived = {estimatedPageWidthPx: pageEst,
+                    pxPerModule: +(pageEst / 297 * 2.945 / 8).toFixed(2)};
+
+  table('Still capture', rows);
+  stop(o.stream);
+}
+
+async function probeDevices() {
+  try {
+    const list = await navigator.mediaDevices.enumerateDevices();
+    const cams = list.filter(d => d.kind === 'videoinput');
+    report.devices = cams.map(d => ({label: d.label || '(no label)', id: d.deviceId.slice(0, 12)}));
+    table('Cameras seen by the browser',
+          cams.map((d, i) => [`camera ${i + 1}`, d.label || '(label hidden)']));
+  } catch (e) { report.devices = String(e); }
+}
+
+$('run').addEventListener('click', async () => {
+  $('run').disabled = true; $('out').innerHTML = '';
+  try {
+    say('Requesting camera…');
+    const warm = await open({facingMode: {ideal: 'environment'}});
+    stop(warm.stream);
+    await probeDevices();
+    await probeLadder();
+    await probeCapabilities();
+    say('Done. Copy the results below and send them.');
+    $('json').value = JSON.stringify(report, null, 2);
+    $('json').hidden = false; $('copy').hidden = false;
+  } catch (e) {
+    say('Failed: ' + (e && e.message || e));
+    report.fatal = String(e);
+    $('json').value = JSON.stringify(report, null, 2);
+    $('json').hidden = false; $('copy').hidden = false;
+  }
+  $('run').disabled = false;
+});
+
+$('copy').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('json').value); say('Copied.'); }
+  catch { $('json').select(); say('Select and copy manually.'); }
+});
+})();
+</script>
+</body>
+</html>
