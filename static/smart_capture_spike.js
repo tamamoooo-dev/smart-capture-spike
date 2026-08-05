@@ -21,7 +21,15 @@
   // (iPhone 17 Pro, 4032x3024 granted): landscape reaches 3629px of page and
   // clears the floor; portrait reaches 2722px and cannot, so in portrait the
   // correct instruction is to rotate, never to move closer.
-  const MAX_SAFE_PAGE_FILL = 0.90;
+  // A4 landscape. The theoretical ceiling on page width is derived from this
+  // and from pageMarginRatio, rather than guessed: the largest A4-aspect
+  // rectangle that fits inside the frame while still leaving the margins that
+  // pageVisible demands. The previous MAX_SAFE_PAGE_FILL = 0.90 was arbitrary.
+  const A4_ASPECT = 297 / 210;
+  // Headroom below this counts as the geometric limit: the page box is an
+  // axis-aligned bound, so in-plane rotation inflates it slightly and exact
+  // equality is never reached in practice.
+  const LIMIT_EPSILON_PX = 30;
   // Deterministic conditions are enforced BEFORE the shutter. A device whose
   // camera cannot deliver at least this many pixels can never satisfy
   // MIN_PAGE_WIDTH_PX, because the page cannot be wider than the frame.
@@ -119,6 +127,12 @@
       ['margins L/R/T/B px', `${m.marginLeftPx}/${m.marginRightPx}/${m.marginTopPx}/${m.marginBottomPx}`],
       ['four corners visible', cornersOk ? 'YES' : 'NO', cornersOk ? 'ok' : 'bad'],
       ['page aspect', m.pageAspect.toFixed(3)],
+      ['theoretical max width', m.theoreticalMaxPageWidthPx],
+      ['remaining headroom', m.atGeometricLimit
+        ? `0 px (geometric limit)` : `+${m.headroomPx} px`,
+        m.atGeometricLimit ? 'bad' : 'ok'],
+      ['limit reachable?', m.deviceCanReachFloor ? 'YES' : 'NO',
+        m.deviceCanReachFloor ? 'ok' : 'bad'],
       ['— PEAK with corners', diag.peakWithCorners, 'peak'],
       ['— PEAK any', diag.peakAny],
       ['— peak frame width', diag.peakFrame]
@@ -210,7 +224,14 @@
     // long side: in a portrait-held frame (3024x4032) the page can never be
     // wider than 3024 however close the teacher gets. Using max() here computed
     // 3629 against a true ceiling of 2722 and kept asking for the impossible.
-    const achievablePageWidthPx = Math.round(width * sourceScale * MAX_SAFE_PAGE_FILL);
+    // Largest A4-aspect page that fits the frame with the required margins.
+    const usableWpx = width * sourceScale * (1 - 2 * THRESHOLDS.pageMarginRatio);
+    const usableHpx = height * sourceScale * (1 - 2 * THRESHOLDS.pageMarginRatio);
+    const theoreticalMaxPageWidthPx = Math.round(Math.min(usableWpx, usableHpx * A4_ASPECT));
+    const achievablePageWidthPx = theoreticalMaxPageWidthPx;
+    // Clamped at zero: a rotated sheet's bounding box can exceed the ideal.
+    const headroomPx = Math.max(0, theoreticalMaxPageWidthPx - pageWidthPx);
+    const atGeometricLimit = headroomPx <= LIMIT_EPSILON_PX;
     const frameLandscape = width >= height;
     const deviceCanReachFloor = achievablePageWidthPx >= MIN_PAGE_WIDTH_PX;
     // Measured margin headroom: if the page is already near the edge, moving
@@ -305,7 +326,7 @@
     const ready = Object.values(checks).every(Boolean);
     return {
       ready, checks,
-      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, pageHeightPx, achievablePageWidthPx, deviceCanReachFloor, roomToApproach, frameLandscape, landscape, pageAspect, frameWidthPx, frameHeightPx, marginLeftPx, marginRightPx, marginTopPx, marginBottomPx},
+      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, pageHeightPx, achievablePageWidthPx, theoreticalMaxPageWidthPx, headroomPx, atGeometricLimit, deviceCanReachFloor, roomToApproach, frameLandscape, landscape, pageAspect, frameWidthPx, frameHeightPx, marginLeftPx, marginRightPx, marginTopPx, marginBottomPx},
       box: {x: component.minX, y: component.minY, width: boxWidth, height: boxHeight},
       worstRegionBox: uniformity >= THRESHOLDS.minRegionLumaRatio ? null : worstRegionBox,
       reason: firstFailure(checks, {coverage})
@@ -313,7 +334,7 @@
   }
 
   function emptyResult(reason) {
-    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,pageHeightPx:0,achievablePageWidthPx:0,deviceCanReachFloor:false,roomToApproach:false,frameLandscape:true,landscape:false,pageAspect:0,frameWidthPx:0,frameHeightPx:0,marginLeftPx:0,marginRightPx:0,marginTopPx:0,marginBottomPx:0}, box:null, worstRegionBox:null, reason};
+    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,pageHeightPx:0,achievablePageWidthPx:0,theoreticalMaxPageWidthPx:0,headroomPx:0,atGeometricLimit:false,deviceCanReachFloor:false,roomToApproach:false,frameLandscape:true,landscape:false,pageAspect:0,frameWidthPx:0,frameHeightPx:0,marginLeftPx:0,marginRightPx:0,marginTopPx:0,marginBottomPx:0}, box:null, worstRegionBox:null, reason};
   }
 
   function firstFailure(checks, metrics) {
@@ -338,10 +359,10 @@
           ? `هذا الجهاز لا يبلغ الدقة المطلوبة مع إبقاء الزوايا الأربع ظاهرة (${metrics.achievablePageWidthPx} من ${MIN_PAGE_WIDTH_PX} بكسل)`
           : `أدر الهاتف أفقياً؛ الوضع الرأسي يبلغ ${metrics.achievablePageWidthPx} بكسل فقط من ${MIN_PAGE_WIDTH_PX}`;
       }
-      if (!metrics.roomToApproach) {
+      if (metrics.atGeometricLimit || !metrics.roomToApproach) {
         return `لا يمكن الاقتراب أكثر دون فقدان زوايا الصفحة (${metrics.pageWidthPx} من ${MIN_PAGE_WIDTH_PX} بكسل)`;
       }
-      return `قرّب الهاتف؛ عرض الصفحة ${metrics.pageWidthPx} من ${MIN_PAGE_WIDTH_PX} بكسل`;
+      return `قرّب الهاتف؛ ${metrics.pageWidthPx} من ${MIN_PAGE_WIDTH_PX} بكسل، المتبقي ${metrics.headroomPx}`;
     }
     return 'الإطار صالح؛ اثبت للحظة';
   }
@@ -465,7 +486,7 @@
     // there is no way to tell a real measurement from a fallback value.
     const m = result.metrics, b = result.box;
     el('analysisFps').textContent = b
-      ? `الدقة ${m.pageWidthPx}/${MIN_PAGE_WIDTH_PX}px ${m.pageWidthPx >= MIN_PAGE_WIDTH_PX ? '✓' : '✗'} · حد الجهاز ${m.achievablePageWidthPx}px · نسبة ${m.pageAspect.toFixed(2)} · ${Math.round(performance.now() - started)}ms`
+      ? `الدقة ${m.pageWidthPx}/${MIN_PAGE_WIDTH_PX}px ${m.pageWidthPx >= MIN_PAGE_WIDTH_PX ? '✓' : '✗'} · الحد النظري ${m.theoreticalMaxPageWidthPx}px · المتبقي ${m.atGeometricLimit ? '0 (الحد الهندسي)' : '+' + m.headroomPx} · نسبة ${m.pageAspect.toFixed(2)} · ${Math.round(performance.now() - started)}ms`
       : `لا صفحة · ${Math.round(performance.now() - started)}ms`;
     stableCount = result.ready ? stableCount + 1 : 0;
     el('stableBar').style.width = `${Math.min(100, stableCount / THRESHOLDS.stableFrames * 100)}%`;
@@ -607,7 +628,7 @@
   // teacher. It belongs to the commit stage, on the full-resolution frame.
   window.SmartCaptureSpike = Object.freeze({
     THRESHOLDS, analyzeImageData, emptyResult, firstFailure, deviceLandscape,
-    MIN_PAGE_WIDTH_PX, MIN_STREAM_WIDTH, MAX_CAPTURE_WIDTH, MAX_SAFE_PAGE_FILL,
+    MIN_PAGE_WIDTH_PX, MIN_STREAM_WIDTH, MAX_CAPTURE_WIDTH, A4_ASPECT, LIMIT_EPSILON_PX,
     registrationStage: 'commit', DIAG, diag, resetPeaks
   });
 })();
