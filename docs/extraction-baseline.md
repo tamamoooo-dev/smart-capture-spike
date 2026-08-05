@@ -46,6 +46,47 @@ by either model.**
 This says nothing yet about whether the scores are right. It says that if any of
 them is wrong, nothing in the current pipeline would raise a hand.
 
+## Measured against verified ground truth, 2026-08-05
+
+Teacher-verified labels for `vs-1-0001` (40 of 40 predictions confirmed, zero
+corrections). Metrics computed through `bench/metrics.py`, not by hand:
+
+| metric | measured | target |
+|---|---|---|
+| row accuracy | **40/40 = 100.0%** | — |
+| false accept rate | 0.0000 | < 0.001 |
+| false reject rate | 0.0000 | — |
+| review rate | 0.0000 | < 0.03 |
+| retake rate | 0.0000 | < 0.05 |
+| max absolute error | 0 | — |
+| `meets_targets()` | **True** | — |
+
+### Why this does not mean the targets are met
+
+`meets_targets()` returns True because zero divided by forty is below any
+threshold. With zero failures in 40 rows, the 95% upper bound on the true false
+accept rate is **7.2%** — **72× the 0.001 target**. This sample cannot
+distinguish a model that errs once in a thousand rows from one that errs once in
+fourteen.
+
+Bounding the rate below 0.001 with 95% confidence needs on the order of
+**3,000 labelled rows — about 75 sheets**.
+
+### Consequence for extraction work
+
+There are no grading errors to attribute, so there is no largest error source to
+identify, and no extraction change can be justified: any modification would move
+row accuracy from 100% to at most 100%, which is unmeasurable. Under the
+project's own rule — a change must produce a measured improvement in grading
+accuracy or be discarded — **no extraction change is currently admissible.**
+
+The binding constraint is corpus size, not model quality. The next useful work
+is labelled sheets that contain errors to learn from, not edits to the model.
+
+Supporting evidence that this is not a fluke of one capture: the phone capture
+(965 markers) and the 300 dpi flatbed scan (823 markers) produce **identical
+scores on all 40 rows**, MAE 0.000, through the same pipeline.
+
 ## What this needs next
 
 Ground-truth scores for these 40 rows. Everything above is measurable without
