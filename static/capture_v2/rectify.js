@@ -177,6 +177,108 @@
         });
       }
     }
+    // The gradient metric lives in summarise(): the weakest region against the
+    // strongest. A sheet sharp at one end and soft at the other scores low
+    // there while its page-wide sharpness still looks healthy.
+    return summarise(cells);
+  }
+
+  /**
+   * Evaluate the corrected document WITHOUT building it.
+   *
+   * Measured: corners from a brightness threshold are 5–66 mm out against
+   * marker-derived truth, against a 4.675 mm row pitch. So this quad can never
+   * produce a crop worth grading, and it does not have to -- bench/ rectifies
+   * the committed frame from the markers themselves, to about 1 mm. The live
+   * loop needs the quad only for framing, quality and the capture trigger, all
+   * of which tolerate centimetres.
+   *
+   * That removes the reason to warp a million pixels per frame (measured at
+   * 104 ms, against a 180 ms budget shared with everything else). Regions are
+   * sampled through the homography instead: same numbers, a fraction of the
+   * work.
+   *
+   * Sampling is spaced in DOCUMENT millimetres, not source pixels, which is
+   * what makes regions comparable. A far region backed by fewer source pixels
+   * scores lower precisely because it is less resolved -- the effect being
+   * detected.
+   */
+  function sampleRegions(imageData, quad, opts) {
+    const o = opts || {};
+    const gx = o.gridX || 6, gy = o.gridY || 4;
+    const patch = o.patch || 16;          // samples per side of a sharpness patch
+    const stepMm = o.stepMm || 0.25;      // spacing, well under the 4 mm marker
+    const info = orientation(quad);
+    const corners = info.longIsHorizontal ? quad : [quad[1], quad[2], quad[3], quad[0]];
+    const h = homography([[0, 0], [A4_LONG_MM, 0], [A4_LONG_MM, A4_SHORT_MM], [0, A4_SHORT_MM]],
+                         corners.map(p => [p[0], p[1]]));
+    if (!h) return null;
+
+    const src = imageData.data, sw = imageData.width, sh = imageData.height;
+    // NaN for "off frame" rather than null: it keeps the sampler allocation
+    // free, and allocating a pair per sample was most of this function's cost.
+    const grid = new Float64Array(patch * patch);
+
+    function fillPatch(cxMm, cyMm) {
+      const half = patch / 2 * stepMm;
+      for (let i = 0; i < patch; i++) {
+        const my = cyMm - half + i * stepMm;
+        for (let j = 0; j < patch; j++) {
+          const mx = cxMm - half + j * stepMm;
+          const w = h[6] * mx + h[7] * my + h[8];
+          const sx = (h[0] * mx + h[1] * my + h[2]) / w;
+          const sy = (h[3] * mx + h[4] * my + h[5]) / w;
+          if (sx < 0 || sy < 0 || sx >= sw - 1 || sy >= sh - 1) {
+            grid[i * patch + j] = NaN;
+            continue;
+          }
+          const x0 = sx | 0, y0 = sy | 0, fx = sx - x0, fy = sy - y0;
+          const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy),
+                w01 = (1 - fx) * fy, w11 = fx * fy;
+          const i00 = (y0 * sw + x0) * 4, i10 = i00 + 4,
+                i01 = ((y0 + 1) * sw + x0) * 4, i11 = i01 + 4;
+          grid[i * patch + j] =
+            0.299 * (src[i00] * w00 + src[i10] * w10 + src[i01] * w01 + src[i11] * w11) +
+            0.587 * (src[i00 + 1] * w00 + src[i10 + 1] * w10 + src[i01 + 1] * w01 + src[i11 + 1] * w11) +
+            0.114 * (src[i00 + 2] * w00 + src[i10 + 2] * w10 + src[i01 + 2] * w01 + src[i11 + 2] * w11);
+        }
+      }
+    }
+
+    const cells = [];
+    for (let ry = 0; ry < gy; ry++) {
+      for (let rx = 0; rx < gx; rx++) {
+        const x0 = rx * A4_LONG_MM / gx, x1 = (rx + 1) * A4_LONG_MM / gx;
+        const y0 = ry * A4_SHORT_MM / gy, y1 = (ry + 1) * A4_SHORT_MM / gy;
+        let lumaSum = 0, lumaN = 0, lapSum = 0, lapSq = 0, lapN = 0;
+        // Four patches spread across the region, so one clean corner of a
+        // region cannot speak for the whole of it.
+        for (const [fx, fy] of [[0.28, 0.28], [0.72, 0.28], [0.28, 0.72], [0.72, 0.72]]) {
+          fillPatch(x0 + (x1 - x0) * fx, y0 + (y1 - y0) * fy);
+          for (let i = 1; i < patch - 1; i++) {
+            for (let j = 1; j < patch - 1; j++) {
+              const c = grid[i * patch + j];
+              const l = grid[i * patch + j - 1], r = grid[i * patch + j + 1];
+              const u = grid[(i - 1) * patch + j], d = grid[(i + 1) * patch + j];
+              if (c !== c || l !== l || r !== r || u !== u || d !== d) continue;
+              lumaSum += c; lumaN++;
+              const lap = 4 * c - l - r - u - d;
+              lapSum += lap; lapSq += lap * lap; lapN++;
+            }
+          }
+        }
+        cells.push({
+          rx, ry,
+          exposure: lumaN ? lumaSum / lumaN : 0,
+          sharpness: lapN ? lapSq / lapN - Math.pow(lapSum / lapN, 2) : 0
+        });
+      }
+    }
+    return summarise(cells);
+  }
+
+  /** Shared by the sampled and the fully-warped paths, so they agree. */
+  function summarise(cells) {
     const exposures = cells.map(c => c.exposure);
     const sharpnesses = cells.map(c => c.sharpness);
     const maxExposure = Math.max(...exposures);
@@ -185,9 +287,6 @@
     return {
       cells,
       minRegionExposure: maxExposure > 0 ? Math.min(...exposures) / maxExposure : 0,
-      // The gradient metric: the weakest region against the strongest. A sheet
-      // that is sharp at one end and soft at the other scores low here while
-      // its page-wide sharpness looks healthy.
       sharpnessUniformity: maxSharp > 0 ? Math.min(...sharpnesses) / maxSharp : 0,
       minRegionSharpness: Math.min(...sharpnesses),
       meanSharpness: sharpnesses.reduce((s, v) => s + v, 0) / sharpnesses.length,
@@ -195,5 +294,6 @@
     };
   }
 
-  return {A4_LONG_MM, A4_SHORT_MM, homography, apply, orientation, rectify, tilt, evaluate};
+  return {A4_LONG_MM, A4_SHORT_MM, homography, apply, orientation, rectify, tilt,
+          evaluate, sampleRegions};
 }));
