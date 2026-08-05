@@ -79,6 +79,62 @@
   let capturedObjectUrl = null;
   let capturedFile = null;
 
+  // Debug state. A black preview must be diagnosable from the page itself
+  // rather than by reading the source, so every stage of bring-up is recorded.
+  const dbg = {permission: 'unknown', streamStarted: false, tracks: 0,
+               videoW: 0, videoH: 0, readyState: -1, frames: 0,
+               grantedWidth: 0, belowFloor: false, lastError: ''};
+  const READY_STATES = ['HAVE_NOTHING', 'HAVE_METADATA', 'HAVE_CURRENT_DATA',
+                        'HAVE_FUTURE_DATA', 'HAVE_ENOUGH_DATA'];
+
+  function renderDebug() {
+    const panel = el('dbgPanel');
+    if (!panel) return;
+    dbg.videoW = video.videoWidth || 0;
+    dbg.videoH = video.videoHeight || 0;
+    dbg.readyState = video.readyState;
+    const rows = [
+      ['camera permission', dbg.permission, dbg.permission === 'granted' ? 'ok' : 'bad'],
+      ['stream started', dbg.streamStarted ? 'YES' : 'NO', dbg.streamStarted ? 'ok' : 'bad'],
+      ['live tracks', dbg.tracks, dbg.tracks ? 'ok' : 'bad'],
+      ['video size', dbg.videoW + ' x ' + dbg.videoH, dbg.videoW ? 'ok' : 'bad'],
+      ['readyState', dbg.readyState + ' ' + (READY_STATES[dbg.readyState] || ''),
+       dbg.readyState >= 4 ? 'ok' : 'bad'],
+      ['frames analysed', dbg.frames, dbg.frames ? 'ok' : 'bad'],
+      ['granted width', dbg.grantedWidth],
+      ['below floor', dbg.belowFloor ? 'YES (< ' + MIN_STREAM_WIDTH + ')' : 'no',
+       dbg.belowFloor ? 'bad' : 'ok'],
+      ['last error', dbg.lastError || '-', dbg.lastError ? 'bad' : 'ok']
+    ];
+    panel.innerHTML = '<table>' + rows.map(function (r) {
+      return '<tr><td>' + r[0] + '</td><td class="' + (r[2] || '') + '">' + r[1] + '</td></tr>';
+    }).join('') + '</table>';
+  }
+
+  window.addEventListener('error', function (e) {
+    dbg.lastError = e.message + ' @' + String(e.filename || '').split('/').pop() + ':' + e.lineno;
+    renderDebug();
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    dbg.lastError = 'promise: ' + ((e.reason && e.reason.message) || e.reason);
+    renderDebug();
+  });
+
+  // videoWidth is only populated once metadata has loaded. play() can resolve
+  // before that, so reading dimensions straight after it returned 0 on iOS and
+  // tripped the capability gate on a camera that was perfectly capable.
+  function awaitVideoDimensions(timeoutMs) {
+    timeoutMs = timeoutMs || 4000;
+    return new Promise(function (resolve) {
+      const started = Date.now();
+      (function poll() {
+        if (video.videoWidth > 0 && video.readyState >= 2) return resolve(true);
+        if (Date.now() - started > timeoutMs) return resolve(false);
+        setTimeout(poll, 100);
+      })();
+    });
+  }
+
   function deviceLandscape() {
     const type = (window.screen && window.screen.orientation && window.screen.orientation.type) || '';
     if (type) return type.startsWith('landscape');
@@ -478,9 +534,19 @@
     analysisCanvas.width = width; analysisCanvas.height = height;
     analysisContext.drawImage(frame.source, 0, 0, width, height);
     const started = performance.now();
-    const result = analyzeImageData(analysisContext.getImageData(0, 0, width, height), frame.width);
+    let result;
+    try {
+      result = analyzeImageData(analysisContext.getImageData(0, 0, width, height), frame.width);
+      dbg.frames++;
+    } catch (e) {
+      dbg.lastError = 'analyze: ' + e.message;
+      renderDebug();
+      requestAnimationFrame(analyzeFrame);
+      return;
+    }
     updateUI(result);
     updateDiagnostics(result);
+    renderDebug();
     // Live detector readout: page box, aspect and page width in source pixels.
     // Without this the orientation indicator is unfalsifiable from the UI --
     // there is no way to tell a real measurement from a fallback value.
@@ -496,46 +562,55 @@
 
   async function startCamera() {
     stopCamera(); captured = false; stableCount = 0; sourceMode = 'camera'; viewer.classList.remove('testing');
+    dbg.lastError = ''; dbg.frames = 0;
     try {
-      // Ask for the largest frame the camera will give. A capture that cannot
-      // reach MIN_PAGE_WIDTH_PX is guaranteed to fail grading, so resolution is
-      // negotiated up front rather than discovered after the shutter.
       stream = await navigator.mediaDevices.getUserMedia({
         video: {facingMode: {ideal: 'environment'},
                 width: {ideal: MAX_CAPTURE_WIDTH}, height: {ideal: 3456}},
         audio: false
       });
-      video.srcObject = stream; await video.play();
+      dbg.permission = 'granted';
+      dbg.streamStarted = true;
+      dbg.tracks = stream.getVideoTracks().filter(function (t) { return t.readyState === 'live'; }).length;
+      video.srcObject = stream;
+      await video.play().catch(function (e) { dbg.lastError = 'play(): ' + e.message; });
+      await awaitVideoDimensions();
+      renderDebug();
 
-      // Capability is a property of the sensor, so test its LONG side. A phone
-      // held portrait reports a short videoWidth but can still deliver once
-      // rotated -- refusing it here would reject a perfectly capable device.
-      // Orientation is handled as guidance, not as a capability failure.
       const granted = Math.max(video.videoWidth, video.videoHeight);
-      if (granted < MIN_STREAM_WIDTH) {
-        // Deterministic and known now: the page can never be wider than the
-        // frame, so no amount of guidance can rescue this device. Refuse to
-        // start rather than guide the teacher toward a capture that must fail.
-        stopCamera();
-        el('modeBadge').textContent = 'الكاميرا غير كافية';
+      dbg.grantedWidth = granted;
+      dbg.belowFloor = granted > 0 && granted < MIN_STREAM_WIDTH;
+
+      // A camera below the floor cannot produce a gradeable image, but that is
+      // a reason to withhold AUTO-CAPTURE -- never a reason to blank the
+      // preview. Stopping the stream here made the page black on every desktop
+      // webcam, and on iOS whenever videoWidth had not populated yet.
+      if (dbg.belowFloor) {
+        el('modeBadge').textContent = 'دقة غير كافية · ' + granted + 'px';
         el('instruction').textContent =
-          `أقصى دقة للكاميرا ${granted} بكسل، والمطلوب ${MIN_STREAM_WIDTH} على الأقل. ` +
-          `لن يتمكن المصحّح من قراءة رموز الخلايا بهذه الدقة؛ استخدم كاميرا الجهاز الأساسية ` +
-          `أو جهازاً بدقة أعلى.`;
-        el('manualCapture').disabled = true;
+          'أقصى دقة للكاميرا ' + granted + ' بكسل والمطلوب ' + MIN_STREAM_WIDTH +
+          '. المعاينة تعمل للقياس، لكن الالتقاط التلقائي متوقف.';
         window.dispatchEvent(new CustomEvent('smartcapture:unsupported',
           {detail: {grantedWidth: granted, requiredWidth: MIN_STREAM_WIDTH}}));
-        return;
+      } else if (!granted) {
+        el('modeBadge').textContent = 'لم تُقرأ أبعاد الفيديو';
+        dbg.lastError = dbg.lastError || 'videoWidth stayed 0';
+      } else {
+        el('modeBadge').textContent = 'تحليل مباشر · ' + granted + 'px';
       }
 
       running = true;
-      el('modeBadge').textContent = `تحليل مباشر · ${granted}px`;
-      el('manualCapture').disabled = false; el('retake').hidden = true;
+      el('manualCapture').disabled = false;
+      el('retake').hidden = true;
       requestAnimationFrame(analyzeFrame);
     } catch (error) {
+      if (/NotAllowed|Permission/i.test((error && error.name) || '')) dbg.permission = 'denied';
+      dbg.streamStarted = false;
+      dbg.lastError = (error && error.name) + ': ' + (error && error.message);
       el('instruction').textContent = 'تعذر تشغيل الكاميرا؛ استخدم صورة اختبار';
       el('modeBadge').textContent = 'الكاميرا غير متاحة';
     }
+    renderDebug();
   }
 
   function stopCamera() {
@@ -591,6 +666,13 @@
   window.addEventListener('resize', applyDeviceOrientation);
   applyDeviceOrientation();
 
+  if (navigator.permissions && navigator.permissions.query) {
+    navigator.permissions.query({name: 'camera'})
+      .then(function (p) { dbg.permission = p.state; renderDebug(); })
+      .catch(function () {});
+  }
+  renderDebug();
+
   if (DIAG) {
     document.body.classList.add('diag');
     const reset = el('diagReset'), copy = el('diagCopy');
@@ -629,6 +711,6 @@
   window.SmartCaptureSpike = Object.freeze({
     THRESHOLDS, analyzeImageData, emptyResult, firstFailure, deviceLandscape,
     MIN_PAGE_WIDTH_PX, MIN_STREAM_WIDTH, MAX_CAPTURE_WIDTH, A4_ASPECT, LIMIT_EPSILON_PX,
-    registrationStage: 'commit', DIAG, diag, resetPeaks
+    registrationStage: 'commit', DIAG, diag, resetPeaks, dbg, awaitVideoDimensions
   });
 })();
