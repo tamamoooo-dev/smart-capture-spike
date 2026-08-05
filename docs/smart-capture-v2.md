@@ -150,6 +150,35 @@ quality gradient from tilt or focus depth. **No rule in the register measures
 this.** `sharpness` is computed over the whole page and cannot see it, exactly
 as page-mean exposure could not see a localised shadow.
 
+### Result: the scanner loop fixed it, and the metric that found it did not
+
+First capture from the wired scanner loop (`vs-1-0001.jpg`, auto-captured):
+
+| capture | markers of 1200 | step bands |
+|---|---|---|
+| **auto-captured, 12 MP** | **965 — 80.4%** | 71–92%, no gradient |
+| flatbed scan | 823 — 68.6% | — |
+| native still, 24 MP | 728–811 | — |
+| previous manual capture | 118 — 9.8% | 22% → 0% |
+
+The auto-captured 12 MP frame beats the flatbed scan and both 24 MP stills, and
+the near/far gradient is gone. Residuals over those 965 markers are p50 0.238,
+p95 1.449, **max 2.509 mm** — the first non-circular residual figures measured
+on a phone capture of this form, and the max is just over the 2.34 mm budget.
+That is the tail ADR-0003 predicted and already decided to answer with
+non-rigid refinement; it is not a capture problem.
+
+**`sharpnessUniformity` is withdrawn as a quality signal.** A flatbed scan,
+where blur is impossible, scores 0.001 on it — worse than the 118-marker
+capture's 0.026 and the 965-marker capture's 0.087. Its weakest region is the
+blank names strip at the end of the sheet, in every capture measured, at
+exposure 247–252 against 144–211 elsewhere. The metric finds *no print here*,
+not *out of focus here*, and on this form it finds the same strip every time.
+
+An earlier note in this document claimed it caught a failure that page-wide
+metrics missed. That was one capture and a coincidence. It is recorded, it
+gates nothing, and it must not be promoted on the evidence that suggested it.
+
 ### The good residual number is circular
 
 That capture reports the best residuals of the whole set — p50 0.148, p95 0.434,

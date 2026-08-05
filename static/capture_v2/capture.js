@@ -230,14 +230,16 @@
   /**
    * Commit the best frame, without buffering full-resolution frames.
    *
-   * Selection, not a new gate: the enforce set decides whether a frame may be
-   * committed at all, exactly as it does for the manual shutter. This only
-   * chooses *which* qualifying frame, by the regional uniformity already being
-   * measured -- the quantity that separated the readable end of the first real
-   * capture from the unreadable one.
+   * Selection, not a gate: the enforce set decides whether a frame may be
+   * committed at all, exactly as for the manual shutter. This only chooses
+   * *which* qualifying frame, and applies no threshold to anything.
    *
-   * No threshold on that quantity is applied. Whether it should block a capture
-   * is a rule question, and rules change on measurement, not while wiring.
+   * Ranked by meanSharpness. It was sharpnessUniformity until a flatbed scan --
+   * where blur is impossible -- scored 0.001 on it, worse than a phone capture
+   * that detected 118 of 1200 markers. Its weakest region is the blank names
+   * strip at the end of the sheet, in every capture measured: the metric finds
+   * "no print here", not "out of focus here". meanSharpness orders the same
+   * three captures correctly at 384.5 / 94.1 / 75.7.
    */
   function considerAutoCapture(result, regional, timestamp) {
     if (!autoEnabled || !running) return;
@@ -251,7 +253,7 @@
     // of one motionless sheet before anyone touched the phone.
     if (auto.latched) return;
 
-    const score = regional.sharpnessUniformity;
+    const score = regional.meanSharpness;
     if (!auto.armed) {
       auto = {armed: true, since: timestamp, best: score, latched: false};
       return;
