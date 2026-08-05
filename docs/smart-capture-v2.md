@@ -114,11 +114,55 @@ invariant, and the teacher must not be forced into a grip. What VS-1 falsifies
 is the inference drawn from it — that orientation therefore never needs to enter
 the feasible-set calculation.
 
-### What VS-1 could not decide
+### Result: the failing variable is the near/far gradient, not resolution
+
+First saved capture (`vs-1-0002.jpg`, 3024×4032) through the current
+registration path, `bench/geometry.detect_markers`:
+
+| capture | markers of 1200 |
+|---|---|
+| vs-1-0002 (app capture) | **118 — 9.8%** |
+| image2 (native still) | 395 — 32.9% |
+| IMG_1147 (native still) | 728 — 60.7% |
+| scannercolor (flatbed) | 823 — 68.6% |
+
+Two candidate causes were tested rather than argued.
+
+**Resolution: ruled out.** IMG_1147 downscaled to exactly 3024×4032 yields
+*769* markers — more than its own native 4284×5712. Detection is flat at 55–64%
+from 2200 px to 4284 px, consistent with the plateau the Phase 0 sweep found.
+3024 px is not the problem, and no resolution rule would have caught this.
+
+**Ink covering markers: ruled out.** Detection by step band on the app capture:
+
+| steps | 1–5 | 6–10 | 11–15 | 16–20 | 21–25 | 26–30 |
+|---|---|---|---|---|---|---|
+| app capture | 22.0% | 14.0% | 15.0% | 5.5% | 2.5% | **0.0%** |
+| IMG_1147 | 54.0% | 67.0% | 68.5% | 54.5% | 49.5% | 70.5% |
+
+Marks accumulate from step 1 upward, so ink is heaviest at *low* step numbers.
+If ink were the cause, detection would be worst there. It is worst at the
+opposite end and reaches exactly zero at steps 26–30 — the end of the sheet
+furthest from the camera.
+
+So one end of the page registers and the other is unreadable: a near/far
+quality gradient from tilt or focus depth. **No rule in the register measures
+this.** `sharpness` is computed over the whole page and cannot see it, exactly
+as page-mean exposure could not see a localised shadow.
+
+### The good residual number is circular
+
+That capture reports the best residuals of the whole set — p50 0.148, p95 0.434,
+max 1.487 mm, all inside the 2.34 mm budget. This means nothing: residuals are
+computed only over markers that were *detected*, and all 118 sit at one end of
+the page. It is the same inlier-only circularity ADR-0003 already corrected
+once. A residual figure is only evidence when paired with its detection rate.
+
+### What VS-1 still cannot decide
 
 Grading outcomes were not part of this session, so no rule was tested for
-discriminativeness. `exposure`, `sharpness` and the 3000 px requirement remain
-undecided until the 39 images are graded through `bench/`.
+discriminativeness. The saved image also came from a later session than the
+exported records, so this capture has no metric vector to correlate against.
 
 ## Rule status register
 
