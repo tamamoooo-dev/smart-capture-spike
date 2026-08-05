@@ -162,8 +162,18 @@
     // permanently true. What matters is that the A4-landscape register lies
     // horizontally in the image -- however the teacher achieves that.
     // Ceiling on what "move closer" can achieve without losing a corner.
-    const achievablePageWidthPx = Math.round(
-      Math.max(width, height) * sourceScale * MAX_SAFE_PAGE_FILL);
+    // A landscape page is bounded by the frame's HORIZONTAL extent, not its
+    // long side: in a portrait-held frame (3024x4032) the page can never be
+    // wider than 3024 however close the teacher gets. Using max() here computed
+    // 3629 against a true ceiling of 2722 and kept asking for the impossible.
+    const achievablePageWidthPx = Math.round(width * sourceScale * MAX_SAFE_PAGE_FILL);
+    const frameLandscape = width >= height;
+    const deviceCanReachFloor = achievablePageWidthPx >= MIN_PAGE_WIDTH_PX;
+    // Measured margin headroom: if the page is already near the edge, moving
+    // closer costs a corner, which is never an acceptable trade.
+    const roomToApproach = Math.min(
+      component.minX, width - 1 - component.maxX,
+      component.minY, height - 1 - component.maxY) > THRESHOLDS.pageMarginRatio * width * 1.5;
     const pageAspect = boxWidth / Math.max(1, boxHeight);
     const landscape = pageAspect >= 1.0;
     const maskFill = component.count / (boxWidth * boxHeight);
@@ -244,7 +254,7 @@
     const ready = Object.values(checks).every(Boolean);
     return {
       ready, checks,
-      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, achievablePageWidthPx, landscape, pageAspect},
+      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, achievablePageWidthPx, deviceCanReachFloor, roomToApproach, frameLandscape, landscape, pageAspect},
       box: {x: component.minX, y: component.minY, width: boxWidth, height: boxHeight},
       worstRegionBox: uniformity >= THRESHOLDS.minRegionLumaRatio ? null : worstRegionBox,
       reason: firstFailure(checks, {coverage})
@@ -252,7 +262,7 @@
   }
 
   function emptyResult(reason) {
-    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,achievablePageWidthPx:0,landscape:false,pageAspect:0}, box:null, worstRegionBox:null, reason};
+    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,achievablePageWidthPx:0,deviceCanReachFloor:false,roomToApproach:false,frameLandscape:true,landscape:false,pageAspect:0}, box:null, worstRegionBox:null, reason};
   }
 
   function firstFailure(checks, metrics) {
@@ -265,16 +275,22 @@
     if (!checks.uniformLighting) return 'يوجد ظل على جزء من الورقة؛ حرّك يدك أو الهاتف بعيداً عن مصدر الضوء';
     if (!checks.lighting) return 'حسّن الإضاءة وتجنب الوهج أو الظلام';
     if (!checks.pageSize) {
-      // "Move closer" is only a legitimate instruction while there is headroom
-      // left before the corners would be lost. Past that it asks the teacher to
-      // violate the hard requirement, so the shortfall is a device/orientation
-      // limit and must be reported as one instead of nagging.
-      if (metrics && metrics.pageWidthPx >= metrics.achievablePageWidthPx) {
-        return metrics.landscape
-          ? `تعذّر بلوغ الدقة المطلوبة مع إبقاء الزوايا الأربع ظاهرة (${metrics.pageWidthPx} من ${MIN_PAGE_WIDTH_PX} بكسل)`
-          : 'أدر الهاتف أفقياً؛ الوضع الرأسي لا يبلغ الدقة المطلوبة مع إبقاء الزوايا ظاهرة';
+      // "Move closer" is only ever emitted when it is actually achievable.
+      // Once the geometric limit is reached the remaining valid outputs are:
+      // rotate the phone, or report that this configuration cannot satisfy the
+      // requirement. Asking for the impossible is never one of them.
+      // With no measurement we cannot know whether approaching is achievable,
+      // so no directional instruction may be given at all.
+      if (!metrics) return 'وجّه الكاميرا إلى السجل';
+      if (!metrics.deviceCanReachFloor) {
+        return metrics.frameLandscape
+          ? `هذا الجهاز لا يبلغ الدقة المطلوبة مع إبقاء الزوايا الأربع ظاهرة (${metrics.achievablePageWidthPx} من ${MIN_PAGE_WIDTH_PX} بكسل)`
+          : `أدر الهاتف أفقياً؛ الوضع الرأسي يبلغ ${metrics.achievablePageWidthPx} بكسل فقط من ${MIN_PAGE_WIDTH_PX}`;
       }
-      return `قرّب الهاتف؛ عرض الصفحة ${metrics ? metrics.pageWidthPx : 0} بكسل والمطلوب ${MIN_PAGE_WIDTH_PX}`;
+      if (!metrics.roomToApproach) {
+        return `لا يمكن الاقتراب أكثر دون فقدان زوايا الصفحة (${metrics.pageWidthPx} من ${MIN_PAGE_WIDTH_PX} بكسل)`;
+      }
+      return `قرّب الهاتف؛ عرض الصفحة ${metrics.pageWidthPx} من ${MIN_PAGE_WIDTH_PX} بكسل`;
     }
     return 'الإطار صالح؛ اثبت للحظة';
   }
@@ -284,7 +300,7 @@
     if (name === 'pageVisible') return `${Math.round(Math.min(m.marginX, m.marginY) * 100)}%`;
     if (name === 'perspective') return `×${m.perspectiveRatio.toFixed(2)}`;
     if (name === 'sharpness') return Math.round(m.sharpness).toString();
-    if (name === 'pageSize') return `${m.pageWidthPx}px`;
+    if (name === 'pageSize') return `${m.pageWidthPx} / ${MIN_PAGE_WIDTH_PX} px`;
     if (name === 'uniformLighting') return `${Math.round(m.uniformity * 100)}%`;
     if (name === 'orientation') return m.pageAspect ? `×${m.pageAspect.toFixed(2)}` : '—';
     return Math.round(m.meanLuma).toString();
@@ -397,7 +413,7 @@
     // there is no way to tell a real measurement from a fallback value.
     const m = result.metrics, b = result.box;
     el('analysisFps').textContent = b
-      ? `${b.width}×${b.height} · نسبة ${m.pageAspect.toFixed(2)} · ${m.pageWidthPx}px · ${Math.round(performance.now() - started)}ms`
+      ? `الدقة ${m.pageWidthPx}/${MIN_PAGE_WIDTH_PX}px ${m.pageWidthPx >= MIN_PAGE_WIDTH_PX ? '✓' : '✗'} · حد الجهاز ${m.achievablePageWidthPx}px · نسبة ${m.pageAspect.toFixed(2)} · ${Math.round(performance.now() - started)}ms`
       : `لا صفحة · ${Math.round(performance.now() - started)}ms`;
     stableCount = result.ready ? stableCount + 1 : 0;
     el('stableBar').style.width = `${Math.min(100, stableCount / THRESHOLDS.stableFrames * 100)}%`;
