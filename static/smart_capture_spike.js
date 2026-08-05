@@ -9,18 +9,15 @@
   // sheet at 51% linear coverage yields only ~1785 px of page. So it is checked
   // live from the detected page box, scaled back to source pixels.
   //
-  // This also forces landscape. On a 4:3 sensor with 5% margins, a portrait
-  // hold caps the page at ~2722 px while landscape reaches ~3629 px, so a
-  // portrait capture of an A4-landscape register can never satisfy the floor.
+  // Measured on the target device: a 3024x4032 frame with the sheet forced to
+  // look landscape peaked at 2898px against a predicted 2915 -- 0.6% agreement,
+  // so the model is sound and the shortfall was real. The fix was not a lower
+  // threshold but aligning the sheet's LONG side with the frame's long side,
+  // which reaches 3887px in either frame orientation.
   const MIN_PAGE_WIDTH_PX = 3000;
   const MAX_CAPTURE_WIDTH = 4608;
-  // Full visibility of all four corners is a HARD requirement and is never
-  // traded for resolution. This is the largest share of the frame's long side
-  // the page may occupy while still leaving margin for the corners, and it
-  // bounds what "move closer" can ever achieve. Measured on the target device
-  // (iPhone 17 Pro, 4032x3024 granted): landscape reaches 3629px of page and
-  // clears the floor; portrait reaches 2722px and cannot, so in portrait the
-  // correct instruction is to rotate, never to move closer.
+  // Full visibility of all four corners is a HARD requirement, never traded
+  // for resolution.
   // A4 landscape. The theoretical ceiling on page width is derived from this
   // and from pageMarginRatio, rather than guessed: the largest A4-aspect
   // rectangle that fits inside the frame while still leaving the margins that
@@ -182,7 +179,9 @@
       ['coverage (area)', pct(m.coverage)],
       ['margins L/R/T/B px', `${m.marginLeftPx}/${m.marginRightPx}/${m.marginTopPx}/${m.marginBottomPx}`],
       ['four corners visible', cornersOk ? 'YES' : 'NO', cornersOk ? 'ok' : 'bad'],
+      ['page long / short px', m.pageWidthPx + ' / ' + m.pageShortPx],
       ['page aspect', m.pageAspect.toFixed(3)],
+      ['axes aligned', m.landscape ? 'YES' : 'NO', m.landscape ? 'ok' : 'bad'],
       ['theoretical max width', m.theoreticalMaxPageWidthPx],
       ['remaining headroom', m.atGeometricLimit
         ? `0 px (geometric limit)` : `+${m.headroomPx} px`,
@@ -269,7 +268,8 @@
     const boxWidth = component.maxX - component.minX + 1;
     const boxHeight = component.maxY - component.minY + 1;
     const coverage = (boxWidth * boxHeight) / count;
-    const pageWidthPx = Math.round(boxWidth * sourceScale);
+    const pageWidthPx = Math.round(Math.max(boxWidth, boxHeight) * sourceScale);
+    const pageShortPx = Math.round(Math.min(boxWidth, boxHeight) * sourceScale);
     // Orientation of the SHEET inside the frame, not of the device or the
     // stream. video.videoWidth/videoHeight describe the MediaStream and do not
     // change when the phone is rotated, so the previous test (frame aspect) was
@@ -280,10 +280,18 @@
     // long side: in a portrait-held frame (3024x4032) the page can never be
     // wider than 3024 however close the teacher gets. Using max() here computed
     // 3629 against a true ceiling of 2722 and kept asking for the impossible.
-    // Largest A4-aspect page that fits the frame with the required margins.
+    // Resolution lives on the register's LONG axis (297mm), and rotation is
+    // free downstream -- ArUco registration is rotation invariant (measured
+    // 68.6/68.4/68.2% at 0/90/270 degrees). So the requirement is that the
+    // sheet's long side lies along the frame's long side, whichever that is.
+    // Demanding the sheet look landscape inside a portrait frame threw away
+    // 25% of the available pixels: 2915 instead of 3887 on a 3024x4032 frame.
     const usableWpx = width * sourceScale * (1 - 2 * THRESHOLDS.pageMarginRatio);
     const usableHpx = height * sourceScale * (1 - 2 * THRESHOLDS.pageMarginRatio);
-    const theoreticalMaxPageWidthPx = Math.round(Math.min(usableWpx, usableHpx * A4_ASPECT));
+    const frameLongPx = Math.max(usableWpx, usableHpx);
+    const frameShortPx = Math.min(usableWpx, usableHpx);
+    const theoreticalMaxPageWidthPx = Math.round(
+      Math.min(frameLongPx, frameShortPx * A4_ASPECT));
     const achievablePageWidthPx = theoreticalMaxPageWidthPx;
     // Clamped at zero: a rotated sheet's bounding box can exceed the ideal.
     const headroomPx = Math.max(0, theoreticalMaxPageWidthPx - pageWidthPx);
@@ -303,7 +311,9 @@
     const frameHeightPx = Math.round(height * sourceScale);
     const pageHeightPx = Math.round(boxHeight * sourceScale);
     const pageAspect = boxWidth / Math.max(1, boxHeight);
-    const landscape = pageAspect >= 1.0;
+    const pageLandscape = pageAspect >= 1.0;
+    // Aligned when the sheet's long side runs along the frame's long side.
+    const landscape = pageLandscape === (width >= height);
     const maskFill = component.count / (boxWidth * boxHeight);
     const marginX = Math.min(component.minX, width - 1 - component.maxX) / width;
     const marginY = Math.min(component.minY, height - 1 - component.maxY) / height;
@@ -382,7 +392,7 @@
     const ready = Object.values(checks).every(Boolean);
     return {
       ready, checks,
-      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, pageHeightPx, achievablePageWidthPx, theoreticalMaxPageWidthPx, headroomPx, atGeometricLimit, deviceCanReachFloor, roomToApproach, frameLandscape, landscape, pageAspect, frameWidthPx, frameHeightPx, marginLeftPx, marginRightPx, marginTopPx, marginBottomPx},
+      metrics: {coverage, maskFill, perspectiveRatio, sharpness, meanLuma, darkFraction, brightFraction, marginX, marginY, uniformity, pageWidthPx, pageShortPx, pageLandscape, pageHeightPx, achievablePageWidthPx, theoreticalMaxPageWidthPx, headroomPx, atGeometricLimit, deviceCanReachFloor, roomToApproach, frameLandscape, landscape, pageAspect, frameWidthPx, frameHeightPx, marginLeftPx, marginRightPx, marginTopPx, marginBottomPx},
       box: {x: component.minX, y: component.minY, width: boxWidth, height: boxHeight},
       worstRegionBox: uniformity >= THRESHOLDS.minRegionLumaRatio ? null : worstRegionBox,
       reason: firstFailure(checks, {coverage})
@@ -390,11 +400,21 @@
   }
 
   function emptyResult(reason) {
-    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,pageHeightPx:0,achievablePageWidthPx:0,theoreticalMaxPageWidthPx:0,headroomPx:0,atGeometricLimit:false,deviceCanReachFloor:false,roomToApproach:false,frameLandscape:true,landscape:false,pageAspect:0,frameWidthPx:0,frameHeightPx:0,marginLeftPx:0,marginRightPx:0,marginTopPx:0,marginBottomPx:0}, box:null, worstRegionBox:null, reason};
+    return {ready:false, checks:{orientation:false,pageVisible:false,perspective:false,sharpness:false,lighting:false,uniformLighting:false,pageSize:false}, metrics:{coverage:0,maskFill:0,perspectiveRatio:99,sharpness:0,meanLuma:0,darkFraction:1,brightFraction:0,marginX:0,marginY:0,uniformity:0,pageWidthPx:0,pageShortPx:0,pageLandscape:false,pageHeightPx:0,achievablePageWidthPx:0,theoreticalMaxPageWidthPx:0,headroomPx:0,atGeometricLimit:false,deviceCanReachFloor:false,roomToApproach:false,frameLandscape:true,landscape:false,pageAspect:0,frameWidthPx:0,frameHeightPx:0,marginLeftPx:0,marginRightPx:0,marginTopPx:0,marginBottomPx:0}, box:null, worstRegionBox:null, reason};
   }
 
   function firstFailure(checks, metrics) {
-    if (!checks.orientation) return 'أدر الهاتف أفقياً ليطابق اتجاه السجل';
+    // When the floor cannot be reached in this configuration, saying anything
+    // else is contradictory: asking for margins reduces page width further,
+    // and moving closer costs a corner. Report the limit and the one action
+    // that changes it -- aligning the long sides.
+    if (metrics && !metrics.deviceCanReachFloor) {
+      return `بلغت الحد الهندسي: ${metrics.theoreticalMaxPageWidthPx} من ${MIN_PAGE_WIDTH_PX} بكسل. ` +
+             `أدر الورقة أو الهاتف حتى يكون الضلع الطويل للسجل موازياً للضلع الطويل للإطار.`;
+    }
+    if (!checks.orientation) {
+      return 'أدر الورقة أو الهاتف: الضلع الطويل للسجل يجب أن يوازي الضلع الطويل للإطار';
+    }
     if (!checks.pageVisible) return 'أظهر الصفحة كاملة مع فراغ حول الحواف';
     if (!checks.perspective) return 'اجعل الهاتف أكثر تعامداً مع الورقة';
     if (!checks.sharpness) return 'ثبّت الهاتف وانتظر اكتمال التركيز';
